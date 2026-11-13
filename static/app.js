@@ -108,6 +108,9 @@ async function pollState() {
     if (st.sys && st.sys.temp != null) h.append(el('span', null, el('b', {style: {color: st.sys.temp >= 80 ? 'var(--danger)' : ''}}, st.sys.temp + ' °C')));
     if (st.sys && st.sys.mem_total) h.append(el('span', null, 'RAM ', el('b', null, (st.sys.mem_used / 1024).toFixed(1) + '/' + (st.sys.mem_total / 1024).toFixed(1) + ' GB')));
     h.append(el('span', {class: 'clock'}, el('b', null, st.time_text)));
+    if (st.update && (st.update.available || st.update.busy)) h.prepend(el('button', {class: 'btn-mini on', onclick: () => { showTab('settings'); setTimeout(() => { const u = $('#updPanel'); if (u) u.scrollIntoView({behavior: 'smooth'}); }, 400); }},
+      st.update.busy ? '⟳ Update läuft …' : '⬆ Update v' + st.update.remote));
+    if (S.updating && st.version !== S.updating) { toast('Update auf v' + st.version + ' installiert'); setTimeout(() => location.reload(), 1200); S.updating = null; }
     const pill = $('#pill'); pill.hidden = !st.unack; pill.textContent = st.unack;
     if (S.alarmSeq !== null && st.alarm_seq > S.alarmSeq) newAlarm();
     S.alarmSeq = st.alarm_seq;
@@ -115,7 +118,7 @@ async function pollState() {
     if (S.tab === 'settings') updateSettingsStatus();
   } catch (e) {
     $('#hstat').innerHTML = '';
-    $('#hstat').append(el('span', null, el('span', {class: 'status-dot'}), ' Verbindung zum Gerät unterbrochen'));
+    $('#hstat').append(el('span', null, el('span', {class: 'status-dot' + (S.updating ? ' warn' : '')}), S.updating ? ' Neustart nach Update …' : ' Verbindung zum Gerät unterbrochen'));
   }
 }
 async function newAlarm() {
@@ -798,9 +801,58 @@ async function loadSettings() {
     el('div', {class: 'actions'}, el('button', {class: 'btn-mini', onclick: async () => { await api('/api/models/download', {body: {}}); toast('Download gestartet'); }}, 'Fehlende Modelle laden'),
       el('button', {class: 'btn-mini', onclick: async () => { if (!confirm('Sentinel neu starten?')) return; await api('/api/restart', {body: {}}); toast('Neustart …'); }}, 'Neu starten')),
     el('h4', null, 'Protokoll'), lg));
+  box.append(updatePanel());
   updateSettingsStatus();
 }
+/* Updates von GitHub */
+function updatePanel() {
+  const U = S.cfg.update || {};
+  const auto = el('input', {type: 'checkbox', checked: U.auto_check !== false});
+  auto.onchange = () => saveSection('update', {auto_check: auto.checked});
+  const repo = el('input', {type: 'text', value: U.repo || 'Scorch1262/Sentinel-MK1'});
+  const br = el('input', {type: 'text', value: U.branch || 'main', style: {width: '120px'}});
+  const p = el('div', {class: 'panel', id: 'updPanel'}, el('h3', null, 'Updates (GitHub)'),
+    el('div', {class: 'form'},
+      el('label', null, 'Installiert'), el('span', {class: 'mono', id: 'updCur'}),
+      el('label', null, 'Auf GitHub'), el('span', {class: 'mono', id: 'updRem'}),
+      el('label', null, 'Stand'), el('span', {class: 'mono small', id: 'updInfo'}),
+      el('label', null, 'Automatisch'), el('label', {class: 'chk'}, auto, 'alle 6 Stunden nach Updates suchen'),
+      el('label', null, 'Repo / Zweig'), el('div', {style: {display: 'flex', gap: '8px'}}, repo, br,
+        el('button', {class: 'btn-mini', onclick: () => saveSection('update', {repo: repo.value.trim(), branch: br.value.trim() || 'main'})}, 'Speichern'))),
+    el('pre', {class: 'log', id: 'updChanges', hidden: true, style: {marginTop: '14px', maxHeight: '220px'}}),
+    el('div', {class: 'actions'},
+      el('button', {class: 'btn btn-ghost', id: 'updCheck', onclick: async () => {
+        $('#updCheck').disabled = true; $('#updInfo').textContent = 'prüfe …';
+        try { const r = await api('/api/update/check', {body: {}}); S.state.update = r; renderUpdate(); toast(r.error ? r.error : r.available ? 'Update v' + r.remote + ' verfügbar' : 'Sentinel ist aktuell'); }
+        catch (e) { toast(e.message); }
+        $('#updCheck').disabled = false;
+      }}, 'Nach Updates suchen'),
+      el('button', {class: 'btn', id: 'updGo', onclick: async () => {
+        const u = S.state.update || {};
+        const force = !u.available;
+        if (!confirm(force ? 'Keine neuere Version gefunden. Version v' + (u.remote || '?') + ' trotzdem neu von GitHub installieren?' :
+          'Update von v' + u.version + ' auf v' + u.remote + ' installieren?\n\nEinstellungen, Datenbank und Bilder bleiben erhalten. Sentinel startet danach neu.')) return;
+        try { await api('/api/update/install', {body: {force}}); S.updating = u.version; toast('Update wird installiert …', '', 8000); }
+        catch (e) { toast(e.message); }
+      }}, 'Update installieren')),
+    el('p', {class: 'muted small', style: {marginBottom: 0}}, 'Holt die neueste Version aus dem GitHub-Repo, sichert die laufende Version (data/backup/) und startet neu. ',
+      'Startet die neue Version nicht, wird die Sicherung automatisch wiederhergestellt.'));
+  return p;
+}
+function renderUpdate() {
+  const u = S.state && S.state.update; if (!u || !$('#updCur')) return;
+  $('#updCur').textContent = 'v' + u.version;
+  $('#updRem').textContent = u.remote ? 'v' + u.remote + (u.available ? '  – neuer!' : '  – aktuell') : '–';
+  $('#updRem').style.color = u.available ? 'var(--accent)' : '';
+  $('#updInfo').textContent = u.busy ? '⟳ ' + u.step : u.error ? u.error : (u.checked ? 'geprüft ' + fmtTime(u.checked, true) : 'noch nicht geprüft') +
+    (u.last_result ? ' · ' + u.last_result : '');
+  $('#updInfo').style.color = u.error ? 'var(--danger)' : '';
+  const ch = $('#updChanges'); ch.hidden = !(u.available && u.changes); ch.textContent = u.changes || '';
+  const b = $('#updGo'); b.disabled = !!u.busy; b.textContent = u.busy ? 'Update läuft …' : u.available ? 'Update auf v' + u.remote + ' installieren' : 'Neu installieren';
+  b.className = u.available ? 'btn' : 'btn btn-ghost';
+}
 async function updateSettingsStatus() {
+  renderUpdate();
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');
   if (ai) ai.textContent = st.models_ready ? st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +

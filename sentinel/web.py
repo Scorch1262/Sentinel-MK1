@@ -85,6 +85,8 @@ class Api:
             return cfg
         if path == "/api/log":
             return list(e.logbuf)
+        if path == "/api/update":
+            return e.updater.public()
         if path == "/api/detections":
             return self.detections(qs)
         m = re.match(r"^/api/detection/(\d+)$", path)
@@ -229,7 +231,7 @@ class Api:
         e = self.e
         if path == "/api/config":
             sec, vals = body.get("section"), body.get("values")
-            if sec not in ("detection", "identity", "storage", "mqtt", "ui", "server"):
+            if sec not in ("detection", "identity", "storage", "mqtt", "ui", "server", "update"):
                 raise ValueError("Bereich unbekannt")
             if sec == "mqtt" and vals.get("password") == "********":
                 vals.pop("password")
@@ -344,6 +346,12 @@ class Api:
             ok = e.mqtt.publish(cfg, "%s/test" % (cfg.get("prefix") or "sentinel").strip("/"),
                                 json.dumps(dict(text="Sentinel MK1 Test", time=time.strftime("%H:%M:%S"))))
             return dict(ok=ok, error=e.mqtt.last_error)
+        if path == "/api/update/check":
+            return e.updater.check()
+        if path == "/api/update/install":
+            if not e.updater.start_update(force=bool(body.get("force"))):
+                raise ValueError("Update läuft bereits")
+            return dict(ok=True)
         if path == "/api/restart":
             threading.Thread(target=self.ctx["restart"], daemon=True).start()
             return dict(ok=True)

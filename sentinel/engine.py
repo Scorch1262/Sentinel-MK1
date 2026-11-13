@@ -209,6 +209,7 @@ class Engine:
         self.alarm_seq = 0
         self.lock = threading.RLock()
         self.started = time.time()
+        self.updater = None          # wird von app.py gesetzt
 
     # ------------------------------------------------------------------
     def log(self, msg):
@@ -951,9 +952,18 @@ class Engine:
     # ------------------------------------------------------------------
     def _housekeeping(self):
         last_clean = 0
+        last_upd = time.time() - 6 * 3600 + 120   # erste Update-Pruefung 2 min nach dem Start
+        confirmed = False
         while not self.stop_ev.wait(10):
             try:
                 now = time.time()
+                if self.updater is not None:
+                    if not confirmed and now - self.started > 60:
+                        confirmed = True
+                        self.updater.confirm_running()
+                    if self.cfg.get("update").get("auto_check", True) and now - last_upd > 6 * 3600:
+                        last_upd = now
+                        threading.Thread(target=self.updater.check, daemon=True).start()
                 with self.lock:
                     ws = list(self.workers.values())
                 for w in ws:
@@ -1032,7 +1042,8 @@ class Engine:
                     platform=sysinfo.platform_name(), jetson=jet, l4t=sysinfo.l4t_version() if jet else "",
                     gpu_available=bool(jet and trt.available()), trt_version=trt.trt_version() if jet else "",
                     engines=self.models.engines_info() if jet else [], building=self.models.building,
-                    decoder=decoder_info(), sys=sysinfo.system_stats(), face_gpu=bool(self.faces and self.faces.gpu),
+                    decoder=decoder_info(), sys=sysinfo.system_stats(),
+                    update=self.updater.public() if self.updater else None, face_gpu=bool(self.faces and self.faces.gpu),
                     backend=self.det.backend if self.det else "", model_size=self.det.size if self.det else 0,
                     det_ms=round(sum(dm) / len(dm)) if dm else None,
                     face_ms=round(sum(fm) / len(fm)) if fm else None, ffmpeg=bool(find_ffmpeg()),

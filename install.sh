@@ -17,7 +17,7 @@
 #  Kompatibel mit dem Netzwerk-Core MK1 (Startdatei "@install.sh", ID "sentinel").
 #  config.json und data/ (Datenbank, Bilder, Modelle) bleiben bei Updates erhalten.
 # ============================================================================
-VERSION=1.1.0
+VERSION=1.2.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/root/Sentinel-MK1}
 PORT=""
@@ -118,7 +118,7 @@ mkdir -p "$DIR"
 if [ "$SRC" != "$DIR" ]; then
     /etc/init.d/sentinel stop >/dev/null 2>&1
     rm -rf "$DIR/sentinel" "$DIR/static"
-    for f in app.py VERSION requirements.txt install.sh install-jetson.sh README.md LICENSE; do
+    for f in app.py VERSION requirements.txt install.sh install-jetson.sh README.md LICENSE CHANGELOG.md; do
         [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$DIR/$f"
     done
     cp -r "$SRC/sentinel" "$DIR/sentinel"

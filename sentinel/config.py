@@ -37,6 +37,7 @@ DEFAULTS = {
     "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "user": "", "password": "",
              "prefix": "sentinel", "publish_detections": False},
     "ui": {"sound": True, "repeat_list_min": 2, "live_mode": "live"},
+    "update": {"repo": "Scorch1262/Sentinel-MK1", "branch": "main", "auto_check": True},
 }
 
 

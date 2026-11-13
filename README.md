@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 1.1.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 1.2.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -156,6 +156,28 @@ die Kameras eintragen, z. B. `rtsp://benutzer:passwort@192.168.200.50:554/stream
 | `/etc/init.d/sentinel restart` | neu starten |
 | `logread -e sentinel` | Protokoll ansehen |
 
+## Updates über GitHub
+
+Unter **Einstellungen → System → Updates (GitHub)** zeigt Sentinel die installierte und die neueste
+Version im Repo [Scorch1262/Sentinel-MK1](https://github.com/Scorch1262/Sentinel-MK1) samt
+Änderungen aus `CHANGELOG.md`. **„Update installieren“** lädt die neue Version, sichert die laufende
+nach `data/backup/v<version>/`, kopiert die Programmdateien und startet neu – `config.json`,
+Datenbank, Bilder, Modelle und GPU-Engines bleiben unverändert. Ist eine neue Version da, erscheint
+oben in der Kopfzeile ein Hinweis (automatische Prüfung alle 6 Stunden, abschaltbar).
+
+- **Sicher:** Vor der Installation werden alle Python-Dateien der neuen Version auf Syntaxfehler
+  geprüft. Startet die neue Version zweimal hintereinander nicht, spielt Sentinel beim dritten Start
+  automatisch die Sicherung zurück (Hinweis unter Updates).
+- **Download:** zuerst das Archiv des Zweigs (`codeload.github.com`), sonst Einzeldateien über
+  `raw.githubusercontent.com` mit der Dateiliste der GitHub-API bzw. der Datei `MANIFEST` im Repo.
+- **Neue Version veröffentlichen:** im Repo `VERSION` **und** `VERSION = "…"` in `app.py` erhöhen,
+  einen Abschnitt `## x.y.z` in `CHANGELOG.md` ergänzen und bei neuen Dateien `MANIFEST` erweitern.
+  Optional führt eine `update_hook.py` im Repo nach dem Kopieren zusätzliche Schritte aus
+  (Aufruf: `python3 update_hook.py <alte> <neue Version>`).
+- Repo und Zweig sind einstellbar (z. B. ein Test-Zweig). Für ein privates Repo einen GitHub-Token in
+  `data/github_token` ablegen. Ältere Versionen werden nicht installiert (kein Downgrade).
+- Bei Installation über den Netzwerk-Core funktioniert zusätzlich dessen Update-Button wie gewohnt.
+
 ## Netzwerk-Core MK1
 
 Sentinel MK1 ist mit dem Netzwerk-Core kompatibel. Empfohlen ist der Modus **„eigener Installer“**
@@ -232,13 +254,16 @@ sentinel/
   streams.py           Empfang per ffmpeg oder GStreamer mit Hardware-Dekoder (Jetson)
   store.py             SQLite-Datenbank
   web.py               Webserver + JSON-API
+  updater.py           Updates aus dem GitHub-Repo (Sicherung, Installation, Neustart)
   imaging.py, models.py, mqtt.py, config.py
 static/                Weboberfläche (HTML/CSS/JS)
 docs/                  Bilder für diese Anleitung
+CHANGELOG.md           Änderungen je Version (wird beim Update angezeigt)
+MANIFEST               Dateiliste für Updates ohne Archiv-Download
 ```
 
 Laufzeitdaten (nicht im Repo): `config.json`, `data/sentinel.db`, `data/snaps/JJJJ-MM-TT/`,
-`data/avatars/`, `data/models/`.
+`data/avatars/`, `data/models/`, `data/backup/` (Sicherungen vor Updates).
 
 Am PC testen: `pip install numpy` und ffmpeg installieren, dann `python3 app.py`
 (ist OpenCV installiert, wird es für die Objekterkennung automatisch genutzt).
