@@ -1,1 +1,195 @@
-# Sentinel-MK1
+# Sentinel MK1
+
+Objekterkennung für mehrere **RTSP-Kamerastreams** auf dem **GL.iNet Brume 2** – im dunklen,
+technischen Design der übrigen Dashboards. Personen, Tiere, Fahrzeuge usw. werden in jedem Stream
+automatisch erkannt, farbig umrahmt, als Bild in einer Galerie gespeichert und **über alle Streams
+hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehen), Korrekturen
+verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
+auftaucht.
+
+**Version: 1.0.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+
+![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
+
+## Funktionen
+
+- **Mehrere RTSP-Streams** gleichzeitig (auch HTTP/MJPEG oder Videodateien – alles, was ffmpeg öffnet).
+  Pro Stream einstellbar: Bilder/s, Bildbreite, TCP/UDP, „nur Keyframes“ (spart Rechenleistung).
+- **Automatische Erkennung** (80 Arten, NanoDet-Plus) mit Rahmenfarben je Gruppe:
+
+  | Gruppe | Farbe | Arten |
+  |---|---|---|
+  | Personen | 🔴 Rot | Person |
+  | Tiere | 🔵 Blau | Vogel, Katze, Hund, Pferd, Schaf, Kuh, … |
+  | Fahrzeuge | 🟡 Gelb | Auto, LKW, Bus, Motorrad |
+  | Fahrräder | 🟢 Grün | Fahrrad |
+  | Weitere Verkehrsmittel | 🟠 Orange | Flugzeug, Zug, Boot (aus) |
+  | Taschen & Gepäck | 🟣 Violett | Rucksack, Handtasche, Koffer, Schirm (aus) |
+  | Sonstige Gegenstände | ⚪ Grau | einzeln zuschaltbar |
+
+- **Galerie:** von jedem erkannten Objekt wird ein Bild gespeichert (Vollbild + Ausschnitt) mit
+  **Quell-Stream und Zeitstempel des Systems**; Filter nach Stream, Art, Kategorie, Tag.
+  Bei längerer Anwesenheit optional weitere Bilder (Standard alle 120 s).
+- **Objekt-Datenbank über alle Streams:** Wird ein Objekt mehrmals erkannt, erscheint es in der
+  Liste **„Objekte“** – dort Namen vergeben und in **selbst angelegte Kategorien** einsortieren
+  (z. B. Familie, Nachbarn, Lieferdienst, Eigene Fahrzeuge).
+- **Personen einzeln identifizieren:** Gesicht finden (YuNet) und vergleichen (SFace, 128-dim.
+  Merkmal). Ohne sichtbares Gesicht wird über Kleidung/Farben zugeordnet (zeitlich begrenzt,
+  Standard 12 h). Taucht das Gesicht später auf, wird die Sichtung automatisch umgebucht.
+- **Fehlzuordnungen korrigieren – das System lernt:** Bild (oder ganze Sichtung) einem anderen
+  oder einem neuen Objekt zuordnen, mehrere Bilder auf einmal verschieben, Objekte zusammenführen.
+  Die Merkmale werden beim richtigen Objekt als feste Beispiele und beim falschen als
+  **Gegenbeispiele** gespeichert – die nächste Erkennung ordnet entsprechend besser zu.
+
+  ![Zuordnung korrigieren](docs/korrektur.png)
+
+- **Alarme:** Regeln für eine Art/Gruppe, eine Kategorie, ein bestimmtes Objekt oder alle Objekte,
+  z. B. *„dieselbe Person ≥ 3× in 30 min in mindestens 2 Streams“* oder *„unbekannte Person …“*.
+  Zählweise je Objekt einzeln oder gesamt, Pause nach Alarm. Meldung in der Oberfläche (mit Ton),
+  per **MQTT** (`sentinel/alarm`) und/oder **Webhook** (JSON per POST).
+- Live-Ansicht: flüssiges Live-Bild oder exakt das analysierte Bild, Vollbild per Doppelklick,
+  Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
+- **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit auf dem Brume).
+- **Speicherverwaltung:** Bilder nach x Tagen bzw. ab x MB automatisch löschen – gelernte
+  Personen/Objekte bleiben erhalten.
+- Alle Einstellungen in `config.json` (gut lesbar), Daten in `data/` – beides bleibt bei Updates erhalten.
+
+![Objektliste mit Namen und Kategorien](docs/objekte.png)
+
+## Installation auf dem Brume 2
+
+### Variante A – ZIP kopieren (wie bei den anderen Programmen)
+
+```sh
+# am PC: ZIP auf den Brume kopieren (auf dem Brume funktioniert scp nur mit -O)
+scp -O Sentinel-MK1.zip root@192.168.8.1:/root/
+
+# auf dem Brume (ssh root@192.168.8.1)
+cd /root && unzip -o Sentinel-MK1.zip && sh Sentinel-MK1/install.sh
+```
+
+Die ZIP entpackt direkt nach `/root/Sentinel-MK1`; für ein Update einfach dieselben Befehle mit der
+neuen ZIP ausführen (`config.json` und `data/` sind nicht in der ZIP und bleiben unverändert).
+
+### Variante B – direkt von GitHub
+
+```sh
+wget -O /tmp/install.sh https://raw.githubusercontent.com/Scorch1262/Sentinel-MK1/main/install.sh
+sh /tmp/install.sh
+```
+
+`install.sh` erledigt alles in einem Durchgang:
+
+1. Pakete per `opkg`: `python3`, `python3-pip`, `python3-sqlite3`, `ffmpeg`, `curl`, `ca-bundle`
+2. Programm nach **`/root/Sentinel-MK1`** (vorhandene `config.json` und `data/` bleiben erhalten)
+3. `numpy` als fertiges Paket in `/root/Sentinel-MK1/.pylibs` (keine Kompilierung)
+4. KI-Modelle (ca. 43 MB) aus dem OpenCV Model Zoo nach `data/models` (mit Prüfsumme)
+5. Autostart als procd-Dienst **`/etc/init.d/sentinel`** (Neustart bei Absturz)
+6. Firewall-Regel für den WAN-Port (abschaltbar mit `--ohne-firewall`)
+
+Danach im Browser `http://<IP-des-Brume>:8096/` öffnen und unter **Einstellungen → Streams**
+die Kameras eintragen, z. B. `rtsp://benutzer:passwort@192.168.200.50:554/stream2`.
+
+| Befehl | Wirkung |
+|---|---|
+| `sh install.sh` | installieren / aktualisieren |
+| `sh install.sh --port 8096` | anderen Port setzen |
+| `sh install.sh uninstall` | Dienst entfernen (Daten bleiben in `/root/Sentinel-MK1`) |
+| `/etc/init.d/sentinel restart` | neu starten |
+| `logread -e sentinel` | Protokoll ansehen |
+
+## Netzwerk-Core MK1
+
+Sentinel MK1 ist mit dem Netzwerk-Core kompatibel. Empfohlen ist der Modus **„eigener Installer“**
+(wie beim Klingelbildschirm), weil `install.sh` auch ffmpeg und die Modelle einrichtet.
+Zeile für die App-Liste (`apps.conf`):
+
+```
+sentinel|Sentinel MK1|Sentinel-MK1|8096|@install.sh|||Objekterkennung in RTSP-Streams (Personen, Tiere, Fahrzeuge)|
+```
+
+- Der Dienst heißt `/etc/init.d/sentinel` – der Netzwerk-Core findet ihn über die ID `sentinel`
+  und startet ihn nach Updates neu. Die Version steht in `VERSION` und in `app.py` (`VERSION = "…"`).
+- Einstellungen liegen außerhalb des Core-Ordners; für Sicherung/Upload:
+  `EXTERN["sentinel"] = ("/root/Sentinel-MK1", ["config.json"])`.
+  Datenbank, Bilder und Modelle liegen in `/root/Sentinel-MK1/data/`.
+- Auch der normale Modus funktioniert (`…|8096|app.py|||…|--port 8096`): `requirements.txt`
+  enthält nur `numpy`, Daten liegen dann unter `apps/sentinel/` (`config.json`, `data/`
+  werden vom Core nicht überschrieben), fehlendes ffmpeg installiert das Programm selbst per opkg
+  und die Modelle lädt es beim ersten Start.
+- MQTT: Auf dem Netzwerk-Core läuft Mosquitto auf demselben Gerät → Broker `127.0.0.1:1883`.
+
+## Leistung auf dem Brume 2
+
+Der Brume 2 hat zwei ARM-Kerne (Cortex-A53) und kein OpenCV/onnxruntime. Sentinel bringt deshalb
+eine eigene, schlanke KI-Laufzeit mit, die nur numpy braucht (`sentinel/onnxlite.py`, Ergebnisse
+identisch zu onnxruntime). Richtwerte:
+
+- Objekterkennung 320 px: auf einem PC ca. 50 ms je Bild; auf dem Brume 2 sind etwa **1–2 s je
+  Bild** zu erwarten (noch nicht auf dem Gerät gemessen – der aktuelle Wert steht oben in der
+  Kopfzeile unter „KI“). Mehrere Streams werden abwechselnd analysiert.
+- Empfehlungen: **Substream** der Kamera (640×360 o. ä.), **1–2 Bilder/s**, Bewegungsfilter an.
+  Bei vielen Kameras „nur Keyframes“ aktivieren – das spart beim Dekodieren am meisten.
+- Modellgröße 416 px ist genauer, braucht aber ca. 1,7× so lange.
+
+## Wie die Wiedererkennung funktioniert
+
+1. Ein Objekt zählt als **Sichtung**, sobald es mehrmals hintereinander erkannt wurde
+   (Standard 2×). Eine durchgehende Anwesenheit zählt einmal; erst nach 60 s Abwesenheit im selben
+   Stream zählt eine neue Sichtung.
+2. Für jede Sichtung werden Merkmale gebildet: bei Personen Gesicht (falls ≥ 28 px sichtbar) und
+   Aussehen (Farbverteilung in drei Bereichen), bei allen anderen das Aussehen.
+3. Vergleich mit allen bekannten Objekten derselben Art – **egal aus welchem Stream**. Passt keins,
+   wird ein neues Objekt angelegt („Person 17“, „Auto 3“ …).
+4. Korrekturen und Zusammenführungen werden als feste Beispiele bzw. Gegenbeispiele gespeichert.
+
+Schwellen (Gesicht 0,40 · Aussehen 0,90 · Zeitfenster) sind unter **Einstellungen → Wiedererkennung**
+anpassbar. Fahrzeuge und Tiere werden nur über ihr Aussehen (Farbe) unterschieden – gleichfarbige
+Autos lassen sich dadurch nicht sicher auseinanderhalten; Kennzeichenerkennung gibt es nicht.
+
+## MQTT
+
+| Topic | Inhalt |
+|---|---|
+| `sentinel/alarm` | `{"alarm": "...", "object": "Max", "object_id": 7, "cls": "person", "count": 3, "streams": ["Einfahrt","Hof"], "text": "...", "time": "2026-11-13 17:20:00"}` |
+| `sentinel/detection` | jede Sichtung (optional, Einstellungen → MQTT) |
+| `sentinel/test` | Testnachricht |
+
+Präfix `sentinel` ist änderbar.
+
+## Dateien
+
+```
+app.py                 Start (python3 app.py [--port 8096] [--host 0.0.0.0] [--data ORDNER])
+install.sh             Installer für den Brume 2 (auch für den Netzwerk-Core)
+requirements.txt       numpy
+VERSION
+sentinel/
+  engine.py            Streams, Analyse, Verfolgung, Wiedererkennung, Alarme, Aufräumen
+  detector.py          NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
+  onnxlite.py          KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
+  streams.py           ffmpeg-Empfang (MJPEG für die Anzeige + Rohbild für die Analyse)
+  store.py             SQLite-Datenbank
+  web.py               Webserver + JSON-API
+  imaging.py, models.py, mqtt.py, config.py
+static/                Weboberfläche (HTML/CSS/JS)
+docs/                  Bilder für diese Anleitung
+```
+
+Laufzeitdaten (nicht im Repo): `config.json`, `data/sentinel.db`, `data/snaps/JJJJ-MM-TT/`,
+`data/avatars/`, `data/models/`.
+
+Am PC testen: `pip install numpy` und ffmpeg installieren, dann `python3 app.py`
+(ist OpenCV installiert, wird es für die Objekterkennung automatisch genutzt).
+
+## Hinweis Datenschutz
+
+Gesichtsmerkmale sind biometrische Daten. Kameras nur auf eigenem Grundstück betreiben, keine
+öffentlichen Flächen oder Nachbargrundstücke erfassen, Betroffene informieren und die
+Aufbewahrungsdauer (Einstellungen → Speicher) knapp halten.
+
+## Lizenz
+
+MIT (siehe `LICENSE`). KI-Modelle aus dem [OpenCV Model Zoo](https://github.com/opencv/opencv_zoo):
+NanoDet-Plus (Apache-2.0), YuNet (MIT), SFace (Apache-2.0) – werden bei der Installation geladen,
+nicht mitgeliefert.

@@ -1,0 +1,7 @@
+# Laufzeitdaten (bleiben auf dem Geraet)
+config.json
+config.json.*
+data/
+.pylibs/
+__pycache__/
+*.pyc

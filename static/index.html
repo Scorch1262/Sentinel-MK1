@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0c0f">
+<title>Sentinel MK1</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="7" fill="#12151a" stroke="#242a33"/>
+      <path d="M6 16c3-5.5 6.5-8 10-8s7 2.5 10 8c-3 5.5-6.5 8-10 8s-7-2.5-10-8z" fill="none" stroke="#ff9142" stroke-width="2"/>
+      <circle cx="16" cy="16" r="3.6" fill="#3ddc97"/><path d="M4 4h5M4 4v5M28 4h-5M28 4v5M4 28h5M4 28v-5M28 28h-5M28 28v-5" stroke="#8891a0" stroke-width="1.6"/></svg>
+    <h1>Sentinel <span class="acc">MK1</span><span class="ver-badge" id="ver"></span></h1>
+  </div>
+  <div class="head-stat" id="hstat"></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="live" class="on">Live</button>
+    <button data-tab="gallery">Galerie</button>
+    <button data-tab="objects">Objekte</button>
+    <button data-tab="alarms">Alarme<span class="pill" id="pill" hidden>0</span></button>
+    <button data-tab="settings">Einstellungen</button>
+  </nav>
+</header>
+<main>
+  <section id="tab-live">
+    <div class="bar">
+      <div class="legend" id="legend"></div>
+      <div class="grow"></div>
+      <button class="btn-mini" id="liveMode" title="Live-Bild oder exakt das analysierte Bild anzeigen">Ansicht: Live</button>
+      <button class="btn-mini" id="liveBig">Große Ansicht</button>
+    </div>
+    <div class="live-grid" id="liveGrid"></div>
+  </section>
+
+  <section id="tab-gallery" hidden>
+    <div class="bar">
+      <select id="gStream"><option value="">Alle Streams</option></select>
+      <select id="gGroup"><option value="">Alle Arten</option></select>
+      <select id="gCat"><option value="">Alle Kategorien</option></select>
+      <input type="date" id="gDate" title="Tag">
+      <label class="chk"><input type="checkbox" id="gSight" checked> nur erste Bilder je Sichtung</label>
+      <label class="chk"><input type="checkbox" id="gNamed"> nur benannte</label>
+      <div class="grow"></div>
+      <span class="muted mono small" id="gCount"></span>
+    </div>
+    <div class="gal" id="gal"></div>
+    <div class="more"><button class="btn btn-ghost" id="gMore" hidden>Weitere laden</button></div>
+  </section>
+
+  <section id="tab-objects" hidden>
+    <div class="bar">
+      <input type="search" id="oQ" placeholder="Name suchen …" style="width:200px">
+      <select id="oGroup"><option value="">Alle Arten</option></select>
+      <select id="oCat"><option value="">Alle Kategorien</option><option value="none">ohne Kategorie</option></select>
+      <select id="oSort">
+        <option value="last">zuletzt gesehen</option><option value="count">meiste Sichtungen</option>
+        <option value="name">Name</option><option value="first">neueste zuerst</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="oMin" checked> nur mehrfach erkannte</label>
+      <div class="grow"></div>
+      <button class="btn btn-ghost" id="oCats">Kategorien verwalten</button>
+    </div>
+    <div class="olist" id="olist"></div>
+  </section>
+
+  <section id="tab-alarms" hidden>
+    <div class="sec-title">Ausgelöste Alarme</div>
+    <div class="bar" style="margin-bottom:10px">
+      <label class="chk"><input type="checkbox" id="evAll"> auch quittierte anzeigen</label>
+      <div class="grow"></div>
+      <button class="btn-mini" id="evAck">Alle quittieren</button>
+      <button class="btn-mini del" id="evClear">Verlauf leeren</button>
+    </div>
+    <div class="evs" id="evs"></div>
+    <div class="sec-title">Alarmregeln</div>
+    <div class="bar"><span class="muted small">Eine Regel löst aus, wenn dasselbe Objekt (z. B. dieselbe Person) in einem Zeitraum mehrfach erkannt wird – auf Wunsch in mehreren Streams.</span><div class="grow"></div><button class="btn" id="ruleNew">+ Neue Regel</button></div>
+    <div class="rules" id="rules"></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="set-grid" id="settings"></div>
+  </section>
+</main>
+<div id="modal" hidden><div class="box" id="mbox"></div></div>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
