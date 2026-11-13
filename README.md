@@ -1,13 +1,14 @@
 # Sentinel MK1
 
-Objekterkennung für mehrere **RTSP-Kamerastreams** auf dem **GL.iNet Brume 2** – im dunklen,
+Objekterkennung für mehrere **RTSP-Kamerastreams** auf dem **GL.iNet Brume 2** oder einem
+**NVIDIA Jetson Nano (2GB/4GB)** mit GPU-Beschleunigung – im dunklen,
 technischen Design der übrigen Dashboards. Personen, Tiere, Fahrzeuge usw. werden in jedem Stream
 automatisch erkannt, farbig umrahmt, als Bild in einer Galerie gespeichert und **über alle Streams
 hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehen), Korrekturen
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 1.0.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 1.1.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -55,6 +56,63 @@ auftaucht.
 - Alle Einstellungen in `config.json` (gut lesbar), Daten in `data/` – beides bleibt bei Updates erhalten.
 
 ![Objektliste mit Namen und Kategorien](docs/objekte.png)
+
+## Installation auf dem NVIDIA Jetson Nano 2GB
+
+Ein Skript richtet alles ein und nutzt die Hardware des Jetson:
+
+| Aufgabe | läuft auf |
+|---|---|
+| Video dekodieren (H.264/H.265) + verkleinern | **NVDEC + VIC** (Hardware, `nvv4l2decoder` / `nvvidconv`) |
+| Objekterkennung NanoDet (416 px) | **GPU, TensorRT FP16** |
+| Gesichtsmerkmale SFace | **GPU, TensorRT FP16** |
+| Gesichtssuche, Verfolgung, Datenbank, Weboberfläche | 4 CPU-Kerne |
+| Live-Bild / Galerie-JPEGs | OpenCV, nur bei Bedarf |
+
+Voraussetzung: JetPack 4.6 (L4T R32.7, Ubuntu 18.04) – das Standard-Image des Jetson Nano 2GB.
+
+```sh
+# ZIP auf den Jetson kopieren und dort:
+unzip -o Sentinel-MK1.zip && sudo bash Sentinel-MK1/install-jetson.sh
+
+# oder direkt von GitHub:
+wget -O /tmp/install-jetson.sh https://raw.githubusercontent.com/Scorch1262/Sentinel-MK1/main/install-jetson.sh
+sudo bash /tmp/install-jetson.sh
+```
+
+`install-jetson.sh` erledigt:
+
+1. Pakete per `apt`: numpy, ffmpeg, GStreamer (rtsp, h264/h265-Parser), OpenBLAS; prüft OpenCV und TensorRT aus JetPack
+2. 4 GB Auslagerungsdatei, falls weniger als 3 GB Swap vorhanden (nötig für den Engine-Bau beim 2-GB-Modell)
+3. Programm nach **`/opt/Sentinel-MK1`** (`config.json` und `data/` bleiben erhalten)
+4. KI-Modelle laden und daraus einmalig die **TensorRT-Engines** bauen (FP16, insgesamt ca. 5–20 min)
+5. Leistungsmodus MAXN (`nvpmodel -m 0`)
+6. Fragt, ob die grafische Oberfläche abgeschaltet werden soll (spart 0,5–0,8 GB RAM – beim 2-GB-Modell empfohlen)
+7. systemd-Dienst **`sentinel`** mit Autostart, ggf. ufw-Regel
+
+| Befehl | Wirkung |
+|---|---|
+| `sudo bash install-jetson.sh` | installieren / aktualisieren |
+| `… --ohne-desktop` / `--mit-desktop` | grafische Oberfläche aus / wieder an (ab Neustart) |
+| `… --maxtakt` | bei jedem Start `jetson_clocks` (höchste Taktraten, Lüfter empfohlen) |
+| `… --port 8096` / `--ohne-swap` | Port setzen / keine Auslagerungsdatei |
+| `sudo bash install-jetson.sh uninstall` | Dienst entfernen (Daten bleiben) |
+| `journalctl -u sentinel -f` | Protokoll |
+| `sudo systemctl restart sentinel` | Neustart |
+
+`sh install.sh` erkennt einen Jetson ebenfalls und startet automatisch `install-jetson.sh`.
+
+Die Kopfzeile zeigt auf dem Jetson zusätzlich GPU-Auslastung, Temperatur und RAM. Unter
+**Einstellungen → System** stehen Gerät, TensorRT-Version, Video-Dekoder und der Zustand der
+GPU-Engines. Fehlen die Engines (z. B. nach einem JetPack-Update), baut Sentinel sie im
+Hintergrund neu und rechnet bis dahin auf der CPU. Liefert der Hardware-Dekoder für einen Stream
+keine Bilder, wechselt dieser Stream automatisch zu ffmpeg; je Stream ist der Dekoder auch fest
+wählbar (Einstellungen → Streams).
+
+Richtwerte Jetson Nano: NanoDet mit TensorRT FP16 ca. 20–40 ms je Bild (statt etwa 1 s auf der
+CPU), dazu bis zu 8 × 1080p30-H.264 im Hardware-Dekoder. Damit sind auch Hauptstreams und 4–6
+Kameras mit je 2–5 Bildern/s möglich. *Diese Werte sind Erfahrungswerte, auf dem Gerät noch nicht
+gemessen – der echte Wert steht in der Kopfzeile unter „KI“.*
 
 ## Installation auf dem Brume 2
 
@@ -161,14 +219,17 @@ Präfix `sentinel` ist änderbar.
 
 ```
 app.py                 Start (python3 app.py [--port 8096] [--host 0.0.0.0] [--data ORDNER])
-install.sh             Installer für den Brume 2 (auch für den Netzwerk-Core)
+install.sh             Installer für den Brume 2 (auch für den Netzwerk-Core; startet auf dem Jetson install-jetson.sh)
+install-jetson.sh      Installer für NVIDIA Jetson Nano (apt, TensorRT-Engines, systemd)
 requirements.txt       numpy
 VERSION
 sentinel/
   engine.py            Streams, Analyse, Verfolgung, Wiedererkennung, Alarme, Aufräumen
   detector.py          NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
+  trt.py               TensorRT-Ausführung auf der Jetson-GPU (CUDA per ctypes, ohne pycuda)
+  sysinfo.py           Geräteerkennung, GPU-Last, Temperatur, RAM
   onnxlite.py          KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
-  streams.py           ffmpeg-Empfang (MJPEG für die Anzeige + Rohbild für die Analyse)
+  streams.py           Empfang per ffmpeg oder GStreamer mit Hardware-Dekoder (Jetson)
   store.py             SQLite-Datenbank
   web.py               Webserver + JSON-API
   imaging.py, models.py, mqtt.py, config.py

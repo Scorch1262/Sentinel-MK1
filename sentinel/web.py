@@ -6,7 +6,8 @@ import re
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .detector import CLASS_GROUP, COCO, DE, GROUPS
@@ -255,7 +256,8 @@ class Api:
                 lst.append(dict(id=sid, name=(s.get("name") or sid).strip()[:60], url=url,
                                 enabled=bool(s.get("enabled", True)), detect=bool(s.get("detect", True)),
                                 fps=float(s.get("fps") or 2), width=int(s.get("width") or 640),
-                                keyframes_only=bool(s.get("keyframes_only")), transport=s.get("transport") or "tcp"))
+                                keyframes_only=bool(s.get("keyframes_only")), transport=s.get("transport") or "tcp",
+                                decoder=s.get("decoder") if s.get("decoder") in ("auto", "nvdec", "gst", "ffmpeg") else "auto"))
             e.cfg.update("streams", lst)
             e.sync_streams()
             return dict(ok=True)
@@ -524,6 +526,7 @@ def make_handler(engine, api):
     return H
 
 
-class Server(ThreadingHTTPServer):
+class Server(socketserver.ThreadingMixIn, HTTPServer):
+    """Mehrere Anfragen gleichzeitig (ThreadingHTTPServer gibt es erst ab Python 3.7 - Jetson hat 3.6)."""
     daemon_threads = True
     allow_reuse_address = True

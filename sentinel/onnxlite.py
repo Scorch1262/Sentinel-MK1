@@ -191,7 +191,7 @@ def _pad_hw(x, p):
     t, l, b, r = p
     if t == l == b == r == 0:
         return x
-    return np.pad(x, ((0, 0), (t, b), (l, r)))
+    return np.pad(x, ((0, 0), (t, b), (l, r)), mode="constant")
 
 
 def conv2d(x, w, b, stride, pads, group, dil=(1, 1)):
@@ -242,7 +242,7 @@ def maxpool(x, k, s, pads):
     xp = x
     if any(pads):
         t, l, b, r = pads
-        xp = np.pad(x, ((0, 0), (t, b), (l, r)), constant_values=-np.inf)
+        xp = np.pad(x, ((0, 0), (t, b), (l, r)), mode="constant", constant_values=-np.inf)
     Hp, Wp = xp.shape[1:]
     Ho = (Hp - k[0]) // s[0] + 1
     Wo = (Wp - k[1]) // s[1] + 1

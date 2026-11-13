@@ -38,6 +38,8 @@ class ModelManager:
         self.progress = {}
         self.lock = threading.Lock()
         self.busy = False
+        self.building = False
+        self.engine_state = {}
         os.makedirs(folder, exist_ok=True)
         for k in MODELS:
             if self.ok(k, quick=True):
@@ -61,6 +63,48 @@ class ModelManager:
     def info(self):
         return [dict(key=k, title=m["title"], file=m["file"], size=m["size"], license=m["license"],
                      state=self.state[k], progress=self.progress.get(k, 0)) for k, m in MODELS.items()]
+
+    # ------------------------------------------------------------------
+    # TensorRT-Engines (nur Jetson): einmalig aus den ONNX-Modellen bauen
+    # ------------------------------------------------------------------
+    ENGINES = {"detector": "nanodet_416", "face_rec": "sface_112"}
+
+    def engine_path(self, key):
+        from . import trt
+        ver = (trt.trt_version() or "x").replace(".", "_")
+        return os.path.join(self.folder, "%s_fp16_trt%s.engine" % (self.ENGINES[key], ver))
+
+    def engine_ok(self, key):
+        p = self.engine_path(key)
+        return os.path.exists(p) and os.path.getsize(p) > 1000
+
+    def engines_info(self):
+        return [dict(key=k, file=os.path.basename(self.engine_path(k)),
+                     state="ok" if self.engine_ok(k) else self.engine_state.get(k, "fehlt"))
+                for k in self.ENGINES]
+
+    def build_engines(self, on_done=None):
+        """Fehlende Engines im Hintergrund bauen (nacheinander, braucht viel Speicher)."""
+        from . import trt
+        with self.lock:
+            if self.building:
+                return
+            self.building = True
+
+        def run():
+            try:
+                for k in self.ENGINES:
+                    if self.engine_ok(k) or self.state.get(k) != "ok" or self.engine_state.get(k) == "fehler":
+                        continue
+                    self.engine_state[k] = "baut"
+                    ok = trt.build_engine(self.path(k), self.engine_path(k), self.log)
+                    self.engine_state[k] = "ok" if ok else "fehler"
+            finally:
+                self.building = False
+                if on_done:
+                    on_done()
+
+        threading.Thread(target=run, daemon=True).start()
 
     def ensure(self, on_done=None):
         with self.lock:

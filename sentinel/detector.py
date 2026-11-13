@@ -90,18 +90,28 @@ class NanoDet:
     MEAN = np.array([103.53, 116.28, 123.675], np.float32)
     STD = np.array([57.375, 57.12, 58.395], np.float32)
 
-    def __init__(self, path, size=416, use_cv2=False):
+    def __init__(self, path, size=416, use_cv2=False, engine=None):
         self.size = int(size)
         self.strides = (8, 16, 32)
         self.reg_max = 7
         self.cv2net = None
-        if use_cv2 and self.size == 416:
+        self.net = None
+        self.gpu = False
+        if engine:
+            # TensorRT (Jetson-GPU): Engine ist fest auf 416 px gebaut
+            from .trt import TrtModel
+            self.net = TrtModel(engine)
+            self.size = 416
+            self.gpu = True
+        elif use_cv2 and self.size == 416:
             try:
                 import cv2
-                self.cv2net = cv2.dnn.readNet(path)
+                major, minor = [int(x) for x in cv2.__version__.split(".")[:2]]
+                if (major, minor) >= (4, 5):  # aeltere DNN-Module koennen das Modell nicht sicher laden
+                    self.cv2net = cv2.dnn.readNet(path)
             except Exception:
                 self.cv2net = None
-        if self.cv2net is None:
+        if self.net is None and self.cv2net is None:
             smap = {416 // s: self.size // s for s in (8, 16, 32)}
             self.net = OnnxModel(path, spatial_map=smap)
         self.anchors = []
@@ -114,7 +124,9 @@ class NanoDet:
 
     @property
     def backend(self):
-        return "OpenCV-DNN" if self.cv2net is not None else "numpy (onnxlite)"
+        if self.gpu:
+            return "TensorRT (GPU, FP16)"
+        return "OpenCV-DNN" if self.cv2net is not None else "numpy (onnxlite, CPU)"
 
     def detect(self, rgb, thr=0.45, iou=0.5, allowed=None):
         """rgb: (H,W,3) uint8. Rueckgabe: Liste (x1,y1,x2,y2,score,klasse) in Pixeln."""
@@ -132,7 +144,10 @@ class NanoDet:
             outs = self.cv2net.forward(self.cv2net.getUnconnectedOutLayersNames())
         else:
             outs = self.net.run({self.net.input_names[0]: x})
-        cls_l, reg_l = outs[:3], outs[3:]
+        # Ausgaben nach Form sortieren (Klassen: 80 Werte, Abstaende: 32 Werte; groesste Ebene zuerst)
+        outs = [np.asarray(o).reshape(-1, np.asarray(o).shape[-1]) for o in outs]
+        cls_l = sorted([o for o in outs if o.shape[1] == 80], key=lambda o: -o.shape[0])
+        reg_l = sorted([o for o in outs if o.shape[1] == 32], key=lambda o: -o.shape[0])
         boxes, scores, labels = [], [], []
         for s, cl, rg, anc in zip(self.strides, cls_l, reg_l, self.anchors):
             cl = cl.reshape(-1, 80)
@@ -182,9 +197,16 @@ class FaceEngine:
     TEMPLATE = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
                          [41.5493, 92.3655], [70.7299, 92.2041]], np.float32)
 
-    def __init__(self, yunet_path, sface_path):
+    def __init__(self, yunet_path, sface_path, sface_engine=None):
         self.det = OnnxModel(yunet_path)
-        self.rec = OnnxModel(sface_path) if sface_path else None
+        self.rec = None
+        self.gpu = False
+        if sface_engine:
+            from .trt import TrtModel
+            self.rec = TrtModel(sface_engine)
+            self.gpu = True
+        elif sface_path:
+            self.rec = OnnxModel(sface_path)
 
     def find(self, rgb, thr=0.75, max_side=192, refine=True):
         """Bestes Gesicht in einem (Personen-)Ausschnitt. Rueckgabe: (score, box, landmarks) in Pixeln oder None.

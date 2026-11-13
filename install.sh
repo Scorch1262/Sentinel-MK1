@@ -17,7 +17,7 @@
 #  Kompatibel mit dem Netzwerk-Core MK1 (Startdatei "@install.sh", ID "sentinel").
 #  config.json und data/ (Datenbank, Bilder, Modelle) bleiben bei Updates erhalten.
 # ============================================================================
-VERSION=1.0.0
+VERSION=1.1.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/root/Sentinel-MK1}
 PORT=""
@@ -34,6 +34,17 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# NVIDIA Jetson? -> eigener Installer (apt, GPU/TensorRT, Hardware-Dekoder, systemd)
+if [ -f /etc/nv_tegra_release ]; then
+    D=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    if [ -f "$D/install-jetson.sh" ]; then
+        exec bash "$D/install-jetson.sh" "$@"
+    fi
+    wget -q -O /tmp/install-jetson.sh "https://raw.githubusercontent.com/$REPO/main/install-jetson.sh" \
+        && exec bash /tmp/install-jetson.sh "$@"
+    echo "[Sentinel] FEHLER: install-jetson.sh nicht gefunden"; exit 1
+fi
 
 log()  { echo "[Sentinel] $*"; }
 fail() { echo "[Sentinel] FEHLER: $*" >&2; exit 1; }
@@ -107,7 +118,7 @@ mkdir -p "$DIR"
 if [ "$SRC" != "$DIR" ]; then
     /etc/init.d/sentinel stop >/dev/null 2>&1
     rm -rf "$DIR/sentinel" "$DIR/static"
-    for f in app.py VERSION requirements.txt install.sh README.md LICENSE; do
+    for f in app.py VERSION requirements.txt install.sh install-jetson.sh README.md LICENSE; do
         [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$DIR/$f"
     done
     cp -r "$SRC/sentinel" "$DIR/sentinel"

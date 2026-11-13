@@ -22,6 +22,7 @@ DEFAULTS = {
         "sighting_gap_s": 60,       # erst nach so langer Abwesenheit im selben Stream zaehlt eine neue Sichtung
         "min_box_px": 24,
         "use_opencv": True,         # OpenCV nutzen, falls installiert (PC); auf dem Brume immer numpy
+        "accel": "auto",            # auto | gpu | cpu  (gpu = TensorRT auf dem NVIDIA Jetson)
     },
     "identity": {
         "faces": True,
@@ -50,13 +51,16 @@ def _merge(base, over):
 
 
 class Config:
-    def __init__(self, path):
+    def __init__(self, path, first_run=None):
         self.path = path
         self.lock = threading.RLock()
         self.data = copy.deepcopy(DEFAULTS)
-        self.load()
+        self.load(first_run)
 
-    def load(self):
+    def load(self, first_run=None):
+        if not os.path.exists(self.path) and first_run:
+            # Startwerte passend zum Geraet (z. B. Jetson: 416 px, kuerzere Analyse-Abstaende)
+            self.data = _merge(DEFAULTS, first_run)
         if os.path.exists(self.path):
             try:
                 raw = open(self.path, "rb").read().decode("utf-8-sig")

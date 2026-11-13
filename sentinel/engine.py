@@ -10,12 +10,12 @@ import urllib.request
 
 import numpy as np
 
-from . import imaging
+from . import imaging, sysinfo, trt
 from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet
 from .models import ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
-from .streams import StreamWorker, find_ffmpeg
+from .streams import StreamWorker, decoder_info, find_ffmpeg
 
 
 def iou(a, b):
@@ -242,20 +242,48 @@ class Engine:
             self.log("ffmpeg-Installation fehlgeschlagen: %s" % e)
         self.log("ffmpeg %s" % ("installiert" if find_ffmpeg() else "weiterhin nicht verfuegbar"))
 
+    def use_gpu(self):
+        """GPU (TensorRT) verwenden? Einstellung detection.accel: auto | gpu | cpu"""
+        acc = self.cfg.get("detection").get("accel", "auto")
+        return acc != "cpu" and sysinfo.is_jetson() and trt.available()
+
     def load_models(self):
         with self.det_lock:
             try:
                 d = self.cfg.get("detection")
                 use_cv2 = bool(d.get("use_opencv", True))
+                gpu = self.use_gpu()
+                if gpu and self.models.all_ok() and any(not self.models.engine_ok(k) and
+                                                        self.models.engine_state.get(k) != "fehler"
+                                                        for k in self.models.ENGINES):
+                    # Engines fehlen: einmalig bauen, bis dahin auf der CPU rechnen
+                    self.models.build_engines(on_done=self.load_models)
                 if self.models.state["detector"] == "ok":
                     t = time.time()
-                    self.det = NanoDet(self.models.path("detector"), int(d.get("model_size", 320)), use_cv2)
+                    eng = self.models.engine_path("detector") if gpu and self.models.engine_ok("detector") else None
+                    try:
+                        det = NanoDet(self.models.path("detector"), int(d.get("model_size", 320)), use_cv2, engine=eng)
+                    except Exception as e:
+                        if not eng:
+                            raise
+                        self.log("TensorRT-Objekterkennung nicht ladbar (%s) - nutze CPU" % e)
+                        det = NanoDet(self.models.path("detector"), int(d.get("model_size", 320)), use_cv2)
+                    self.det = det
                     self.log("Objekterkennung bereit (%s, %d px, %.1f s)" % (self.det.backend, self.det.size,
                                                                             time.time() - t))
                 if self.models.state["face_det"] == "ok":
                     rec = self.models.path("face_rec") if self.models.state["face_rec"] == "ok" else None
-                    self.faces = FaceEngine(self.models.path("face_det"), rec)
-                    self.log("Gesichtserkennung bereit%s" % ("" if rec else " (ohne Wiedererkennung)"))
+                    eng = self.models.engine_path("face_rec") if rec and gpu and self.models.engine_ok("face_rec") else None
+                    try:
+                        faces = FaceEngine(self.models.path("face_det"), rec, sface_engine=eng)
+                    except Exception as e:
+                        if not eng:
+                            raise
+                        self.log("TensorRT-Gesichtsmerkmale nicht ladbar (%s) - nutze CPU" % e)
+                        faces = FaceEngine(self.models.path("face_det"), rec)
+                    self.faces = faces
+                    self.log("Gesichtserkennung bereit%s" % ("" if rec else " (ohne Wiedererkennung)")
+                             + (" (Merkmale auf GPU)" if faces.gpu else ""))
                 self.engine_error = "" if self.det else "Modelle fehlen"
             except Exception as e:
                 self.engine_error = "Modelle konnten nicht geladen werden: %s" % e
@@ -288,7 +316,8 @@ class Engine:
 
     @staticmethod
     def _stream_sig(s):
-        return json.dumps({k: s.get(k) for k in ("url", "fps", "width", "keyframes_only", "transport", "jpeg_q")},
+        return json.dumps({k: s.get(k) for k in ("url", "fps", "width", "keyframes_only", "transport", "jpeg_q",
+                                                 "decoder")},
                           sort_keys=True)
 
     def stream_cfg(self, sid):
@@ -928,8 +957,7 @@ class Engine:
                 with self.lock:
                     ws = list(self.workers.values())
                 for w in ws:
-                    j = w.latest_jpeg()
-                    if w.status == "live" and j and now - j[1] > 30:
+                    if w.status == "live" and w.last_ts and now - w.last_ts > 30:
                         self.log("Stream %s liefert keine Bilder mehr - Neustart" % w.cfg.get("name"))
                         w._kill()
                 for sid in list(self.live):
@@ -999,7 +1027,12 @@ class Engine:
         except Exception:
             pass
         unack = self.store.q("SELECT COUNT(*) n FROM alarm_events WHERE ack=0", one=True)["n"]
+        jet = sysinfo.is_jetson()
         return dict(version=self.version, streams=ws, models=self.models.info(), models_ready=self.det is not None,
+                    platform=sysinfo.platform_name(), jetson=jet, l4t=sysinfo.l4t_version() if jet else "",
+                    gpu_available=bool(jet and trt.available()), trt_version=trt.trt_version() if jet else "",
+                    engines=self.models.engines_info() if jet else [], building=self.models.building,
+                    decoder=decoder_info(), sys=sysinfo.system_stats(), face_gpu=bool(self.faces and self.faces.gpu),
                     backend=self.det.backend if self.det else "", model_size=self.det.size if self.det else 0,
                     det_ms=round(sum(dm) / len(dm)) if dm else None,
                     face_ms=round(sum(fm) / len(fm)) if fm else None, ffmpeg=bool(find_ffmpeg()),

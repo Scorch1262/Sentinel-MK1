@@ -103,7 +103,10 @@ async function pollState() {
       ' Streams ', el('b', null, on + '/' + st.streams.length)));
     h.append(el('span', null, el('span', {class: 'status-dot ' + (st.models_ready ? 'online' : 'warn')}),
       ' KI ', el('b', null, st.models_ready ? (st.det_ms != null ? st.det_ms + ' ms' : 'bereit') : 'lädt …')));
+    if (st.sys && st.sys.gpu != null) h.append(el('span', null, 'GPU ', el('b', null, st.sys.gpu + ' %')));
     if (st.load) h.append(el('span', null, 'Last ', el('b', null, st.load[0])));
+    if (st.sys && st.sys.temp != null) h.append(el('span', null, el('b', {style: {color: st.sys.temp >= 80 ? 'var(--danger)' : ''}}, st.sys.temp + ' °C')));
+    if (st.sys && st.sys.mem_total) h.append(el('span', null, 'RAM ', el('b', null, (st.sys.mem_used / 1024).toFixed(1) + '/' + (st.sys.mem_total / 1024).toFixed(1) + ' GB')));
     h.append(el('span', {class: 'clock'}, el('b', null, st.time_text)));
     const pill = $('#pill'); pill.hidden = !st.unack; pill.textContent = st.unack;
     if (S.alarmSeq !== null && st.alarm_seq > S.alarmSeq) newAlarm();
@@ -169,7 +172,7 @@ function renderLive(full) {
     const dot = $('#dot-' + s.id), meta = $('#meta-' + s.id), msg = $('#msg-' + s.id), view = $('#v-' + s.id);
     if (!dot) return;
     dot.className = 'status-dot ' + (s.online ? 'online' : s.status === 'verbinde' ? 'warn' : '');
-    meta.textContent = s.online ? (s.size ? s.size[0] + '×' + s.size[1] + ' · ' : '') + s.fps + ' fps' : s.status;
+    meta.textContent = s.online ? (s.size ? s.size[0] + '×' + s.size[1] + ' · ' : '') + s.fps + ' fps' + (s.decoder ? ' · ' + s.decoder : '') : s.status;
     msg.textContent = s.online ? '' : (s.status === 'verbinde' ? 'Verbinde …' : (s.error || s.status));
     msg.style.display = s.online ? 'none' : 'flex';
     if (s.size) view.style.aspectRatio = s.size[0] + '/' + s.size[1];
@@ -650,13 +653,15 @@ function streamEditor(list) {
       const fps = numIn(s.fps || 2, {min: .2, max: 15, step: .2, class: 'num'}); fps.oninput = () => s.fps = +fps.value;
       const w = numIn(s.width || 640, {min: 160, max: 1920, step: 16, class: 'num'}); w.oninput = () => s.width = +w.value;
       const tr = el('select', null, el('option', {value: 'tcp'}, 'TCP'), el('option', {value: 'udp'}, 'UDP')); tr.value = s.transport || 'tcp'; tr.onchange = () => s.transport = tr.value;
+      const dc = el('select', {title: 'Dekoder'}, el('option', {value: 'auto'}, 'Dekoder: automatisch'), el('option', {value: 'nvdec'}, 'Hardware (Jetson NVDEC)'),
+        el('option', {value: 'gst'}, 'GStreamer (Software)'), el('option', {value: 'ffmpeg'}, 'ffmpeg')); dc.value = s.decoder || 'auto'; dc.onchange = () => s.decoder = dc.value;
       const st = (S.state.streams.find(x => x.id === s.id) || {});
       wrap.append(el('div', {class: 'stream-ed'},
         el('div', {class: 'r'}, el('span', {class: 'status-dot ' + (st.online ? 'online' : s.id ? '' : 'idle'), id: 'sdot-' + (s.id || 'n' + i)}), nm,
           el('button', {class: 'btn-mini del', onclick: () => { if (confirm('Stream „' + (s.name || '') + '“ entfernen?')) { list.splice(i, 1); draw(); } }}, 'Entfernen')),
         el('div', {class: 'r'}, url),
         el('div', {class: 'r small'}, el('label', {class: 'chk'}, en, 'aktiv'), el('label', {class: 'chk'}, dt, 'Objekterkennung'),
-          el('span', {class: 'muted'}, 'Bilder/s'), fps, el('span', {class: 'muted'}, 'Breite'), w, tr,
+          el('span', {class: 'muted'}, 'Bilder/s'), fps, el('span', {class: 'muted'}, 'Breite'), w, tr, dc,
           el('label', {class: 'chk', title: 'Nur Schlüsselbilder dekodieren – spart viel Rechenleistung, Live-Bild ruckelt'}, kf, 'nur Keyframes')),
         st.error ? el('div', {class: 'muted mono small', style: {color: 'var(--danger)'}}, st.error) : null));
     });
@@ -673,13 +678,14 @@ async function loadSettings() {
   const se = streamEditor(streams);
   box.append(el('div', {class: 'panel', style: {gridColumn: '1/-1'}}, el('h3', null, 'Streams (Kameras)'), se.wrap,
     el('div', {class: 'actions'},
-      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 2, width: 640}); se.draw(); }}, '+ Stream hinzufügen'),
+      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: S.state.jetson ? 4 : 2, width: 640, decoder: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
       el('button', {class: 'btn', onclick: async () => {
         try { await api('/api/streams', {body: {streams}}); toast('Streams gespeichert – verbinde …'); S.cfg = await api('/api/config'); fillSelects(); setTimeout(loadSettings, 1500); }
         catch (e) { toast(e.message); }
       }}, 'Streams speichern')),
-    el('p', {class: 'muted small', style: {marginBottom: 0}}, 'Tipp für den Brume 2: den Unter-/Substream der Kamera verwenden (z. B. 640×360). ',
-      '1–2 Bilder/s reichen für die Erkennung. Die Bildbreite wird vor der Analyse verkleinert.')));
+    el('p', {class: 'muted small', style: {marginBottom: 0}}, S.state.jetson ?
+      'Jetson: Videos werden per Hardware (NVDEC) dekodiert und skaliert – auch Hauptstreams (1080p, H.264/H.265) sind möglich. 2–5 Bilder/s je Kamera.' :
+      'Tipp für den Brume 2: den Unter-/Substream der Kamera verwenden (z. B. 640×360). 1–2 Bilder/s reichen für die Erkennung. Die Bildbreite wird vor der Analyse verkleinert.')));
   /* Erkennung */
   const D = C.detection;
   const gl = el('div', {class: 'grp-list'});
@@ -696,6 +702,7 @@ async function loadSettings() {
   const thr = el('input', {type: 'range', min: .2, max: .9, step: .05, value: D.threshold}); const thrv = el('span', {class: 'mono'}, Math.round(D.threshold * 100) + ' %');
   thr.oninput = () => thrv.textContent = Math.round(thr.value * 100) + ' %';
   const ms = el('select', null, el('option', {value: 320}, '320 px – schnell (empfohlen für Brume 2)'), el('option', {value: 416}, '416 px – genauer, ca. 1,7× Rechenzeit')); ms.value = D.model_size;
+  const ac = el('select', null, el('option', {value: 'auto'}, 'automatisch (GPU, falls vorhanden)'), el('option', {value: 'gpu'}, 'GPU (TensorRT, Jetson)'), el('option', {value: 'cpu'}, 'nur CPU')); ac.value = D.accel || 'auto';
   const mh = numIn(D.min_hits, {min: 1, max: 10}), iv = numIn(D.interval_s, {min: .2, step: .1}), mg = el('input', {type: 'checkbox', checked: D.motion_gate});
   const ml = numIn(D.motion_level, {min: .5, step: .5}), tt = numIn(D.track_timeout_s, {min: 1, step: .5}), rs = numIn(D.resnap_s, {min: 0, step: 10});
   const mb = numIn(D.min_box_px, {min: 8}), en = el('input', {type: 'checkbox', checked: D.enabled});
@@ -706,7 +713,8 @@ async function loadSettings() {
       el('label', null, 'Erkennen'), gl,
       el('label', null, 'Weitere Arten'), el('div', null, el('button', {class: 'btn-mini', onclick: () => cp.hidden = !cp.hidden}, 'Einzelne Arten wählen (' + extra.size + ')'), cp),
       el('label', null, 'Mindest-Sicherheit'), el('div', {style: {display: 'flex', gap: '10px', alignItems: 'center'}}, thr, thrv),
-      el('label', null, 'Modellgröße'), ms,
+      el('label', null, 'Rechenwerk'), ac,
+      el('label', null, 'Modellgröße'), ms, el('div', {class: 'hint'}, 'Auf der Jetson-GPU wird immer mit 416 px gerechnet.'),
       el('label', null, 'Sichtung ab'), el('div', null, mh, ' Treffern hintereinander'),
       el('label', null, 'Analyse-Abstand'), el('div', null, iv, ' s je Stream'),
       el('label', null, 'Bewegungsfilter'), el('div', null, el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), ' Schwelle ', ml),
@@ -716,7 +724,7 @@ async function loadSettings() {
       el('label', null, 'Mindestgröße'), el('div', null, mb, ' px Höhe')),
     el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => saveSection('detection', {
       enabled: en.checked, groups: Object.keys(gch).filter(k => gch[k].checked), extra_classes: [...extra], threshold: +thr.value,
-      model_size: +ms.value, min_hits: +mh.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
+      model_size: +ms.value, accel: ac.value, min_hits: +mh.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
       track_timeout_s: +tt.value, sighting_gap_s: +sg.value, resnap_s: +rs.value, min_box_px: +mb.value})}, 'Speichern'))));
   /* Wiedererkennung */
   const I = C.identity;
@@ -777,6 +785,8 @@ async function loadSettings() {
   box.append(el('div', {class: 'panel'}, el('h3', null, 'System'),
     el('div', {class: 'form'},
       el('label', null, 'Version'), el('span', {class: 'mono'}, 'Sentinel MK1 v' + S.state.version),
+      el('label', null, 'Gerät'), el('span', {class: 'mono'}, S.state.platform + (S.state.l4t ? ' · ' + S.state.l4t : '') + (S.state.trt_version ? ' · TensorRT ' + S.state.trt_version : '')),
+      el('label', null, 'Video-Dekoder'), el('span', {class: 'mono'}, S.state.decoder),
       el('label', null, 'KI-Laufzeit'), el('span', {class: 'mono', id: 'sysAi'}),
       el('label', null, 'Web-Port'), S.state.port_locked ? el('span', {class: 'mono'}, S.state.port + ' (per Startparameter festgelegt)') :
         el('div', {style: {display: 'flex', gap: '8px', alignItems: 'center'}}, port, el('button', {class: 'btn-mini', onclick: async () => {
@@ -794,10 +804,12 @@ async function updateSettingsStatus() {
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');
   if (ai) ai.textContent = st.models_ready ? st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +
-    (st.face_ms != null ? ' · Gesicht ' + st.face_ms + ' ms' : '') : (st.error || 'Modelle werden geladen …');
+    (st.face_ms != null ? ' · Gesicht ' + st.face_ms + ' ms' : '') + (st.face_gpu ? ' (GPU)' : '') + (st.building ? ' · GPU-Engines werden gebaut …' : '') : (st.error || 'Modelle werden geladen …');
   const mt = $('#mtab');
   if (mt) { mt.innerHTML = ''; st.models.forEach(m => mt.append(el('tr', null, el('td', null, m.title), el('td', {class: 'muted small'}, (m.size / 1048576).toFixed(1) + ' MB · ' + m.license),
-    el('td', {style: {color: m.state === 'ok' ? 'var(--accent-2)' : m.state === 'fehler' ? 'var(--danger)' : 'var(--accent)'}}, m.state === 'lädt' ? 'lädt ' + m.progress + ' %' : m.state)))); }
+    el('td', {style: {color: m.state === 'ok' ? 'var(--accent-2)' : m.state === 'fehler' ? 'var(--danger)' : 'var(--accent)'}}, m.state === 'lädt' ? 'lädt ' + m.progress + ' %' : m.state))));
+    (st.engines || []).forEach(m => mt.append(el('tr', null, el('td', null, 'GPU-Engine ' + m.file), el('td', {class: 'muted small'}, 'TensorRT FP16'),
+      el('td', {style: {color: m.state === 'ok' ? 'var(--accent-2)' : m.state === 'fehler' ? 'var(--danger)' : 'var(--accent)'}}, m.state === 'baut' ? 'wird gebaut …' : m.state)))); }
   st.streams.forEach(s => { const d = $('#sdot-' + s.id); if (d) d.className = 'status-dot ' + (s.online ? 'online' : ''); });
   const lg = $('#logv');
   if (lg) { try { const l = await api('/api/log'); const atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 20;
