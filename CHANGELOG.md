@@ -1,5 +1,10 @@
 # Änderungen
 
+## 1.2.1
+- Jetson-Installer: Paketlisten werden zuerst geladen (frischer Jetson: „kein
+  Installationskandidat für curl“), Downloads klappen auch ohne curl (wget bzw. Python)
+- Brume-Installer: gleiche Download-Rückfälle
+
 ## 1.2.0
 - Updates direkt aus dem GitHub-Repo: Einstellungen → System → „Update installieren“
 - Automatische Suche nach neuen Versionen (alle 6 Stunden), Hinweis in der Kopfzeile

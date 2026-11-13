@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=1.2.0
+VERSION=1.2.1
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -53,6 +53,27 @@ fail() { echo -e "\e[31m[Sentinel] FEHLER:\e[0m $*" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || fail "bitte mit sudo ausfuehren:  sudo bash $0"
 export DEBIAN_FRONTEND=noninteractive
 
+# Download mit dem, was da ist: curl -> wget -> Python (auf frischen Systemen fehlt curl oft)
+fetch() {   # url ziel
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 --connect-timeout 20 -o "$2" "$1" && return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -t 3 -O "$2" "$1" && [ -s "$2" ] && return 0
+    fi
+    python3 - "$1" "$2" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "Sentinel-MK1-Installer"})
+with urllib.request.urlopen(req, timeout=60) as r, open(sys.argv[2], "wb") as f:
+    while True:
+        b = r.read(1 << 16)
+        if not b:
+            break
+        f.write(b)
+PYEOF
+}
+
+
 # ---------------------------------------------------------------------------
 if [ "$ACTION" = "uninstall" ]; then
     systemctl stop sentinel 2>/dev/null
@@ -72,17 +93,23 @@ log "Installation v$VERSION auf ${MODEL:-Jetson} (L4T ${L4T:-?}) nach $DIR"
 case "$L4T" in R32*) ;; *) log "HINWEIS: getestet ist JetPack 4.6 (L4T R32.7) - andere Versionen sollten funktionieren" ;; esac
 
 # ---------------------------------------------------------------------------
+# 0) Paketlisten laden (auf einem frischen Jetson sind sie leer -> "kein Installationskandidat")
+# ---------------------------------------------------------------------------
+log "Lade Paketlisten (apt-get update) ..."
+apt-get update -q >/dev/null 2>&1 || log "WARNUNG: apt-get update fehlgeschlagen (Internet? Uhrzeit?)"
+command -v curl >/dev/null 2>&1 || apt-get install -y -q curl ca-certificates >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
 # 1) Quelle: entpackter Ordner neben diesem Skript oder GitHub
 # ---------------------------------------------------------------------------
 SRC=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 TMP=""
 if [ ! -f "$SRC/app.py" ] || [ ! -d "$SRC/sentinel" ]; then
-    command -v curl >/dev/null 2>&1 || apt-get install -y -q curl >/dev/null
     TMP=$(mktemp -d /tmp/sentinel.XXXXXX)
     log "Lade Programm von GitHub ($REPO) ..."
     got=0
     for br in main master; do
-        if curl -fsSL --retry 3 -o "$TMP/src.tgz" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$br"; then
+        if fetch "https://codeload.github.com/$REPO/tar.gz/refs/heads/$br" "$TMP/src.tgz"; then
             mkdir -p "$TMP/x" && tar -xzf "$TMP/src.tgz" -C "$TMP/x" && got=1 && break
         fi
     done
@@ -94,7 +121,6 @@ fi
 # 2) Pakete (apt)
 # ---------------------------------------------------------------------------
 log "Installiere Pakete (apt) ..."
-apt-get update -q >/dev/null 2>&1 || log "WARNUNG: apt-get update fehlgeschlagen (Internet?)"
 PKGS="python3 python3-numpy ffmpeg curl libopenblas-base gstreamer1.0-tools gstreamer1.0-plugins-base
       gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav"
 # shellcheck disable=SC2086
@@ -160,7 +186,7 @@ getmodel() {   # pfad datei groesse sha256
     local f="$DIR/data/models/$2"
     if [ -f "$f" ] && [ "$(stat -c %s "$f")" = "$3" ]; then return 0; fi
     log "Lade Modell $2 ..."
-    curl -fsSL --retry 3 -o "$f.part" "$ZOO/$1/$2" || { rm -f "$f.part"; log "  WARNUNG: Download fehlgeschlagen (wird beim Start erneut versucht)"; return 1; }
+    fetch "$ZOO/$1/$2" "$f.part" || { rm -f "$f.part"; log "  WARNUNG: Download fehlgeschlagen (wird beim Start erneut versucht)"; return 1; }
     if [ "$(sha256sum "$f.part" | cut -d' ' -f1)" != "$4" ]; then rm -f "$f.part"; log "  WARNUNG: Pruefsumme falsch"; return 1; fi
     mv -f "$f.part" "$f"
 }

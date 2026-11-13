@@ -17,7 +17,7 @@
 #  Kompatibel mit dem Netzwerk-Core MK1 (Startdatei "@install.sh", ID "sentinel").
 #  config.json und data/ (Datenbank, Bilder, Modelle) bleiben bei Updates erhalten.
 # ============================================================================
-VERSION=1.2.0
+VERSION=1.2.1
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/root/Sentinel-MK1}
 PORT=""
@@ -41,7 +41,8 @@ if [ -f /etc/nv_tegra_release ]; then
     if [ -f "$D/install-jetson.sh" ]; then
         exec bash "$D/install-jetson.sh" "$@"
     fi
-    wget -q -O /tmp/install-jetson.sh "https://raw.githubusercontent.com/$REPO/main/install-jetson.sh" \
+    { wget -q -O /tmp/install-jetson.sh "https://raw.githubusercontent.com/$REPO/main/install-jetson.sh" 2>/dev/null \
+      || python3 -c "import urllib.request as u; open('/tmp/install-jetson.sh','wb').write(u.urlopen('https://raw.githubusercontent.com/$REPO/main/install-jetson.sh', timeout=60).read())"; } \
         && exec bash /tmp/install-jetson.sh "$@"
     echo "[Sentinel] FEHLER: install-jetson.sh nicht gefunden"; exit 1
 fi
@@ -50,6 +51,27 @@ log()  { echo "[Sentinel] $*"; }
 fail() { echo "[Sentinel] FEHLER: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || fail "bitte als root ausfuehren"
+
+# Download mit dem, was da ist: curl -> wget -> Python (auf frischen Systemen fehlt curl oft)
+fetch() {   # url ziel
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 --connect-timeout 20 -o "$2" "$1" && return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$2" "$1" && [ -s "$2" ] && return 0
+    fi
+    python3 - "$1" "$2" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "Sentinel-MK1-Installer"})
+with urllib.request.urlopen(req, timeout=60) as r, open(sys.argv[2], "wb") as f:
+    while True:
+        b = r.read(1 << 16)
+        if not b:
+            break
+        f.write(b)
+PYEOF
+}
+
 
 # ---------------------------------------------------------------------------
 if [ "$ACTION" = "uninstall" ]; then
@@ -76,7 +98,7 @@ if [ ! -f "$SRC/app.py" ] || [ ! -d "$SRC/sentinel" ]; then
     log "Lade Programm von GitHub ($REPO) ..."
     ok=0
     for br in main master; do
-        if curl -fsSL --retry 3 -o "$TMP/src.tgz" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$br"; then
+        if fetch "https://codeload.github.com/$REPO/tar.gz/refs/heads/$br" "$TMP/src.tgz"; then
             mkdir -p "$TMP/x" && tar -xzf "$TMP/src.tgz" -C "$TMP/x" && ok=1 && break
         fi
     done
@@ -153,7 +175,7 @@ getmodel() {   # pfad datei groesse sha256
     f="$DIR/data/models/$2"
     if [ -f "$f" ] && [ "$(wc -c < "$f" | tr -d ' ')" = "$3" ]; then return 0; fi
     log "Lade Modell $2 ..."
-    curl -fsSL --retry 3 -o "$f.part" "$ZOO/$1/$2" || { rm -f "$f.part"; log "  WARNUNG: Download fehlgeschlagen (wird beim Start erneut versucht)"; return 1; }
+    fetch "$ZOO/$1/$2" "$f.part" || { rm -f "$f.part"; log "  WARNUNG: Download fehlgeschlagen (wird beim Start erneut versucht)"; return 1; }
     if command -v sha256sum >/dev/null 2>&1 && [ "$(sha256sum "$f.part" | cut -d' ' -f1)" != "$4" ]; then
         rm -f "$f.part"; log "  WARNUNG: Pruefsumme falsch"; return 1
     fi
