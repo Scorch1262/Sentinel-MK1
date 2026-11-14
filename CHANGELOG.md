@@ -1,5 +1,19 @@
 # Änderungen
 
+## 2.2.0
+- Einstellungen überarbeitet: nichts überlappt mehr oder ragt über den Rand – Felder mit
+  Einheit/Erklärung brechen sauber um, zwei Spalten erst ab ausreichender Breite,
+  Broker-, Repo- und Lüfterzeilen passen auch aufs Handy
+- RTSP-Transport „automatisch“ (neuer Standard): erst TCP, liefert die Kamera darüber keine
+  Bilder, wird auf UDP gewechselt (wie VLC); bestehende Streams werden umgestellt
+- Neuer Knopf „Testen“ je Stream: prüft vom Jetson aus Netzwerk, RTSP OPTIONS/DESCRIBE
+  (mit Klartext-Hinweis bei 401/404/453/461/503), Videoempfang über TCP und UDP sowie
+  ffprobe – inklusive Empfehlung zum Übernehmen und SDP der Kamera
+- Unter jedem Stream steht der aktive Dekoder und Transport; Fehler mit Tipps (Passwort,
+  Pfad, Kamera nur per UDP)
+- Behoben: ffmpeg-Empfang konnte hängen bleiben, wenn die Bildgröße vorab unbekannt war
+  (neuere ffmpeg-Versionen) – Größe wird jetzt vorab ermittelt, Rohdaten werden gepuffert
+
 ## 2.1.0
 - Bewegungspflicht: neue Personen, Tiere und Fahrräder werden nur gemeldet, wenn sich an der
   Stelle etwas bewegt – stehende Schatten, Plakate und Muster fallen heraus (je Gruppe einstellbar)

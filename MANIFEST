@@ -22,6 +22,7 @@ sentinel/mqtt.py
 sentinel/onnxlite.py
 sentinel/store.py
 sentinel/streams.py
+sentinel/streamtest.py
 sentinel/sysinfo.py
 sentinel/trt.py
 sentinel/updater.py

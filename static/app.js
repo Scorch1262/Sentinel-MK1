@@ -801,11 +801,11 @@ async function editRule(r) {
       el('label', null, 'Auswahl'), f.tg,
       el('label', null, 'Zählweise'), f.cm,
       el('label', null, 'Objekte'), f.on,
-      el('label', null, 'Mindestens erkannt'), el('div', null, f.mc, ' mal'),
-      el('label', null, 'innerhalb von'), el('div', null, f.wm, ' Minuten'),
-      el('label', null, 'in mindestens'), el('div', null, f.ms, ' verschiedenen Streams'),
+      el('label', null, 'Mindestens erkannt'), el('div', {class: 'row'}, f.mc, ' mal'),
+      el('label', null, 'innerhalb von'), el('div', {class: 'row'}, f.wm, ' Minuten'),
+      el('label', null, 'in mindestens'), el('div', {class: 'row'}, f.ms, ' verschiedenen Streams'),
       el('div', {class: 'hint'}, 'Eine Sichtung zählt, sobald das Objekt mehrmals hintereinander erkannt wurde; eine durchgehende Anwesenheit zählt einmal.'),
-      el('label', null, 'Pause nach Alarm'), el('div', null, f.cd, ' Minuten'),
+      el('label', null, 'Pause nach Alarm'), el('div', {class: 'row'}, f.cd, ' Minuten'),
       el('label', null, 'Meldung'), el('div', {style: {display: 'flex', gap: '16px', flexWrap: 'wrap'}},
         el('label', {class: 'chk'}, f.snd, 'Ton im Browser'), el('label', {class: 'chk'}, f.mq, 'MQTT (Einstellungen → MQTT)')),
       el('label', null, 'Webhook'), f.wh),
@@ -820,7 +820,7 @@ async function editRule(r) {
 }
 
 /* ------------------------------------------------------------ Einstellungen */
-function numIn(v, attrs) { return el('input', Object.assign({type: 'number', value: v, style: {width: '110px'}}, attrs || {})); }
+function numIn(v, attrs) { return el('input', Object.assign({type: 'number', value: v, class: 'num'}, attrs || {})); }
 async function saveSection(section, values, msg) {
   try { await api('/api/config', {body: {section, values}}); S.cfg = await api('/api/config'); toast(msg || 'Gespeichert'); renderLegend(); }
   catch (e) { toast(e.message); }
@@ -838,18 +838,42 @@ function streamEditor(list) {
       const kf = el('input', {type: 'checkbox', checked: !!s.keyframes_only}); kf.onchange = () => s.keyframes_only = kf.checked;
       const fps = numIn(s.fps || 2, {min: .2, max: 15, step: .2, class: 'num'}); fps.oninput = () => s.fps = +fps.value;
       const w = numIn(s.width || 640, {min: 160, max: 1920, step: 16, class: 'num'}); w.oninput = () => s.width = +w.value;
-      const tr = el('select', null, el('option', {value: 'tcp'}, 'TCP'), el('option', {value: 'udp'}, 'UDP')); tr.value = s.transport || 'tcp'; tr.onchange = () => s.transport = tr.value;
+      const tr = el('select', {title: 'RTSP-Transport'}, el('option', {value: 'auto'}, 'RTSP: automatisch'), el('option', {value: 'tcp'}, 'RTSP über TCP'), el('option', {value: 'udp'}, 'RTSP über UDP (wie VLC)'));
+      tr.value = s.transport || 'auto'; tr.onchange = () => s.transport = tr.value;
+      const res = el('div', {class: 'stest', hidden: true});
+      const tb = el('button', {class: 'btn-mini', title: 'Verbindung, RTSP-Antworten und Empfang über TCP und UDP direkt vom Gerät aus prüfen'}, 'Testen');
+      tb.onclick = async () => {
+        tb.disabled = true; tb.textContent = 'Teste … (bis 1 Min.)'; res.hidden = false; res.innerHTML = '';
+        res.append(el('div', {class: 'muted small'}, 'Prüfe ' + (s.url || '') + ' …'));
+        try {
+          const r = await api('/api/streams/test', {body: {id: s.id, url: s.url}});
+          res.innerHTML = '';
+          r.steps.forEach(x => res.append(el('div', {class: 'st ' + (x.ok === true ? 'ok' : x.ok === false ? 'bad' : 'info')},
+            el('span', {class: 'ic'}, x.ok === true ? '✓' : x.ok === false ? '✕' : 'i'), el('b', null, x.name), el('span', {class: 'd'}, x.detail))));
+          if (r.recommend && r.recommend !== (s.transport || 'auto')) {
+            res.append(el('div', {class: 'st info'}, el('span', {class: 'ic'}, '→'), el('b', null, 'Empfehlung'),
+              el('span', {class: 'd'}, 'RTSP über ' + r.recommend.toUpperCase() + ' ',
+                el('button', {class: 'btn-mini', onclick: () => { s.transport = r.recommend; tr.value = r.recommend; toast('Übernommen – „Streams speichern“ nicht vergessen'); }}, 'übernehmen'))));
+          } else if (!r.recommend) {
+            res.append(el('div', {class: 'st bad'}, el('span', {class: 'ic'}, '!'), el('b', null, 'Ergebnis'), el('span', {class: 'd'}, 'Kein Videoempfang möglich – siehe rot markierten Schritt.')));
+          }
+          if (r.sdp) res.append(el('details', null, el('summary', {class: 'muted small'}, 'SDP der Kamera'), el('pre', {class: 'mono small'}, r.sdp)));
+        } catch (e) { res.innerHTML = ''; res.append(el('div', {class: 'st bad'}, e.message)); }
+        tb.disabled = false; tb.textContent = 'Testen';
+      };
       const dc = el('select', {title: 'Dekoder'}, el('option', {value: 'auto'}, 'Dekoder: automatisch'), el('option', {value: 'nvdec'}, 'Hardware (Jetson NVDEC)'),
         el('option', {value: 'gst'}, 'GStreamer (Software)'), el('option', {value: 'ffmpeg'}, 'ffmpeg')); dc.value = s.decoder || 'auto'; dc.onchange = () => s.decoder = dc.value;
       const st = (S.state.streams.find(x => x.id === s.id) || {});
       wrap.append(el('div', {class: 'stream-ed'},
         el('div', {class: 'r'}, el('span', {class: 'status-dot ' + (st.online ? 'online' : s.id ? '' : 'idle'), id: 'sdot-' + (s.id || 'n' + i)}), nm,
           el('button', {class: 'btn-mini del', onclick: () => { if (confirm('Stream „' + (s.name || '') + '“ entfernen?')) { list.splice(i, 1); draw(); } }}, 'Entfernen')),
-        el('div', {class: 'r'}, url),
+        el('div', {class: 'r'}, url, tb),
         el('div', {class: 'r small'}, el('label', {class: 'chk'}, en, 'aktiv'), el('label', {class: 'chk'}, dt, 'Objekterkennung'),
-          el('span', {class: 'muted'}, 'Bilder/s'), fps, el('span', {class: 'muted'}, 'Breite'), w, tr, dc,
+          el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Bilder/s'), fps), el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Breite'), w), tr, dc,
           el('label', {class: 'chk', title: 'Nur Schlüsselbilder dekodieren – spart viel Rechenleistung, Live-Bild ruckelt'}, kf, 'nur Keyframes')),
-        st.error ? el('div', {class: 'muted mono small', style: {color: 'var(--danger)'}}, st.error) : null));
+        (st.decoder || st.transport) ? el('div', {class: 'muted small'}, 'Aktiv: ' + [st.decoder, st.transport ? 'RTSP ' + st.transport : ''].filter(Boolean).join(' · ') + (st.online ? ' · ' + st.fps + ' Bilder/s' : '')) : null,
+        res,
+        st.error && !st.online ? el('div', {class: 'mono small err-line'}, st.error) : null));
     });
   };
   draw();
@@ -864,21 +888,22 @@ async function loadSettings() {
   const se = streamEditor(streams);
   box.append(el('div', {class: 'panel', style: {gridColumn: '1/-1'}}, el('h3', null, 'Streams (Kameras)'), se.wrap,
     el('div', {class: 'actions'},
-      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 4, width: 640, decoder: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
+      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 4, width: 640, decoder: 'auto', transport: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
       el('button', {class: 'btn', onclick: async () => {
         try { await api('/api/streams', {body: {streams}}); toast('Streams gespeichert – verbinde …'); S.cfg = await api('/api/config'); fillSelects(); setTimeout(loadSettings, 1500); }
         catch (e) { toast(e.message); }
       }}, 'Streams speichern')),
     el('p', {class: 'muted small', style: {marginBottom: 0}}, 'H.264/H.265 werden per Hardware (NVDEC) dekodiert und skaliert – auch Hauptstreams (1080p) sind möglich. ',
-      'MJPEG-Kameras laufen über ffmpeg. 2–5 Bilder/s je Kamera reichen für die Erkennung.')));
+      'MJPEG-Kameras laufen über ffmpeg. 2–5 Bilder/s je Kamera reichen für die Erkennung. ',
+      'RTSP „automatisch“ verbindet über TCP und wechselt bei Problemen auf UDP (wie VLC). „Testen“ zeigt, woran eine Kamera scheitert.')));
   /* Erkennung */
   const D = C.detection;
   const GT = Object.assign({}, D.group_thresholds || {});
   const gl = el('div', {class: 'grp-list'});
   const gch = {}, gthr = {}, gmov = {};
   const RM = D.require_motion || ['person', 'animal', 'bike'];
-  gl.append(el('div', {class: 'g head'}, el('span'), el('span'), el('span', null, 'Gruppe'), el('span', null, 'Mindest-Sicherheit'),
-    el('span', {title: 'Neue Objekte nur melden, wenn sich an der Stelle etwas bewegt (gegen Schatten, Plakate, Statuen)'}, 'nur mit Bewegung')));
+  gl.append(el('div', {class: 'g head'}, el('span'), el('span'), el('span', null, 'Gruppe'), el('span', {title: 'Mindest-Sicherheit'}, 'Schwelle'),
+    el('span', {title: 'Neue Objekte nur melden, wenn sich an der Stelle etwas bewegt (gegen Schatten, Plakate, Statuen)'}, 'Bewegung')));
   S.meta.groups.forEach(g => {
     gch[g.id] = el('input', {type: 'checkbox', checked: D.groups.includes(g.id)});
     gthr[g.id] = numIn(Math.round((GT[g.id] != null ? GT[g.id] : D.threshold) * 100), {min: 20, max: 95, step: 5, class: 'thr'});
@@ -916,20 +941,20 @@ async function loadSettings() {
       el('label', null, 'Rechenwerk'), ac,
       msRow[0], msRow[1],
       el('label', null, 'Erkennen'), gl,
-      el('label', null, 'Weitere Arten'), el('div', null, el('button', {class: 'btn-mini', onclick: () => cp.hidden = !cp.hidden}, 'Einzelne Arten wählen (' + extra.size + ')'), cp),
-      el('label', null, 'Grundschwelle'), el('div', null, thr, ' % für einzeln gewählte Arten'),
+      el('label', null, 'Weitere Arten'), el('div', {class: 'row'}, el('button', {class: 'btn-mini', onclick: () => cp.hidden = !cp.hidden}, 'Einzelne Arten wählen (' + extra.size + ')'), cp),
+      el('label', null, 'Grundschwelle'), el('div', {class: 'row'}, thr, ' % für einzeln gewählte Arten'),
       el('label', null, 'Zweitprüfung'), el('label', {class: 'chk'}, vf, 'neue Objekte im vergrößerten Ausschnitt nochmal prüfen'),
       el('div', {class: 'hint'}, 'Verwirft die meisten Schatten, Spiegelungen und Muster. Kostet nur bei neuen Objekten eine zusätzliche Analyse.'),
-      el('label', null, 'Personen-Form'), el('div', null, pa, ' × Breite – mindestens so hoch muss eine Person sein (0 = aus)'),
-      el('label', null, 'Sichtung ab'), el('div', null, mh, ' Treffern hintereinander'),
+      el('label', null, 'Personen-Form'), el('div', {class: 'row'}, pa, ' × Breite = Mindesthöhe einer Person (0 = aus)'),
+      el('label', null, 'Sichtung ab'), el('div', {class: 'row'}, mh, ' Treffern hintereinander'),
       el('label', null, 'Verworfen'), fst,
-      el('label', null, 'Analyse-Abstand'), el('div', null, iv, ' s je Stream'),
-      el('label', null, 'Bewegungsfilter'), el('div', {style: {display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap'}},
+      el('label', null, 'Analyse-Abstand'), el('div', {class: 'row'}, iv, ' s je Stream'),
+      el('label', null, 'Bewegungsfilter'), el('div', {class: 'row'},
         el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), el('span', {class: 'muted'}, 'Schwelle'), ml),
-      el('label', null, 'Objekt verschwunden nach'), el('div', null, tt, ' s'),
-      el('label', null, 'Neue Sichtung nach'), el('div', null, sg, ' s Abwesenheit im selben Stream'),
-      el('label', null, 'Weiteres Bild alle'), el('div', null, rs, ' s bei längerer Anwesenheit (0 = nie)'),
-      el('label', null, 'Mindestgröße'), el('div', null, mb, ' px Höhe')),
+      el('label', null, 'Objekt verschwunden nach'), el('div', {class: 'row'}, tt, ' s'),
+      el('label', null, 'Neue Sichtung nach'), el('div', {class: 'row'}, sg, ' s Abwesenheit im selben Stream'),
+      el('label', null, 'Weiteres Bild alle'), el('div', {class: 'row'}, rs, ' s bei längerer Anwesenheit (0 = nie)'),
+      el('label', null, 'Mindestgröße'), el('div', {class: 'row'}, mb, ' px Höhe')),
     el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => {
       const gt = {}; Object.keys(gthr).forEach(k => { gt[k] = +gthr[k].value / 100; });
       saveSection('detection', {
@@ -951,10 +976,10 @@ async function loadSettings() {
     el('div', {class: 'form'},
       el('label', null, 'Gesichter'), el('label', {class: 'chk'}, fa, 'Gesichter suchen und vergleichen'),
       el('label', null, 'Gesicht gleich ab'), ft, el('div', {class: 'hint'}, 'Ähnlichkeit 0–1; höher = strenger (Standard 0,40)'),
-      el('label', null, 'Gesicht mind.'), el('div', null, fm, ' px breit'),
+      el('label', null, 'Gesicht mind.'), el('div', {class: 'row'}, fm, ' px breit'),
       el('label', null, 'Aussehen gleich ab'), at, el('div', {class: 'hint'}, 'höher = weniger Verwechslungen, aber mehr neue Objekte (Standard 0,90)'),
-      el('label', null, 'Personen über Aussehen'), el('div', null, aw, ' h nach letzter Sichtung'),
-      el('label', null, 'Andere über Aussehen'), el('div', null, ao, ' h nach letzter Sichtung'),
+      el('label', null, 'Personen über Aussehen'), el('div', {class: 'row'}, aw, ' h nach letzter Sichtung'),
+      el('label', null, 'Andere über Aussehen'), el('div', {class: 'row'}, ao, ' h nach letzter Sichtung'),
       el('label', null, 'Lernbeispiele je Objekt'), mx),
     el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => saveSection('identity', {faces: fa.checked, face_threshold: +ft.value,
       face_min_px: +fm.value, appearance_threshold: +at.value, appearance_window_h: +aw.value, appearance_window_other_h: +ao.value, max_samples: +mx.value})}, 'Speichern'))));
@@ -966,7 +991,7 @@ async function loadSettings() {
   box.append(el('div', {class: 'panel'}, el('h3', null, 'MQTT'),
     el('div', {class: 'form'},
       el('label', null, 'MQTT'), el('label', {class: 'chk'}, me, 'Alarme an MQTT-Broker senden'),
-      el('label', null, 'Broker'), el('div', {style: {display: 'flex', gap: '8px'}}, mhst, mp),
+      el('label', null, 'Broker'), el('div', {class: 'row'}, mhst, mp),
       el('div', {class: 'hint'}, 'Läuft Mosquitto auf dem Jetson selbst: 127.0.0.1 : 1883'),
       el('label', null, 'Benutzer'), mu, el('label', null, 'Passwort'), mpw,
       el('label', null, 'Topic-Präfix'), mpre, el('div', {class: 'hint'}, 'Alarme: <präfix>/alarm · Erkennungen: <präfix>/detection'),
@@ -984,11 +1009,11 @@ async function loadSettings() {
   box.append(el('div', {class: 'panel'}, el('h3', null, 'Speicher & Oberfläche'),
     el('div', {class: 'form'},
       el('label', null, 'Belegt'), usage,
-      el('label', null, 'Bilder behalten'), el('div', null, md, ' Tage (0 = unbegrenzt)'),
-      el('label', null, 'Höchstens'), el('div', null, mm, ' MB (älteste zuerst löschen)'),
+      el('label', null, 'Bilder behalten'), el('div', {class: 'row'}, md, ' Tage (0 = unbegrenzt)'),
+      el('label', null, 'Höchstens'), el('div', {class: 'row'}, mm, ' MB (älteste zuerst löschen)'),
       el('div', {class: 'hint'}, 'Gelernte Personen/Objekte bleiben auch nach dem Löschen alter Bilder erhalten.'),
       el('label', null, 'Alarmton'), el('label', {class: 'chk'}, snd, 'Ton in der Oberfläche abspielen'),
-      el('label', null, 'Objektliste ab'), el('div', null, rl, ' Sichtungen („mehrfach erkannt“)')),
+      el('label', null, 'Objektliste ab'), el('div', {class: 'row'}, rl, ' Sichtungen („mehrfach erkannt“)')),
     el('div', {class: 'actions'},
       el('button', {class: 'btn', onclick: async () => { await saveSection('storage', {max_days: +md.value, max_mb: +mm.value}, ' '); await saveSection('ui', {sound: snd.checked, repeat_list_min: +rl.value}); }}, 'Speichern'),
       el('button', {class: 'btn btn-ghost', onclick: async () => { await api('/api/cleanup', {body: {}}); toast('Aufräumen gestartet'); }}, 'Jetzt aufräumen'),
@@ -1004,7 +1029,7 @@ async function loadSettings() {
       el('label', null, 'Video-Dekoder'), el('span', {class: 'mono'}, S.state.decoder),
       el('label', null, 'KI-Laufzeit'), el('span', {class: 'mono', id: 'sysAi'}),
       el('label', null, 'Web-Port'), S.state.port_locked ? el('span', {class: 'mono'}, S.state.port + ' (per Startparameter festgelegt)') :
-        el('div', {style: {display: 'flex', gap: '8px', alignItems: 'center'}}, port, el('button', {class: 'btn-mini', onclick: async () => {
+        el('div', {class: 'row'}, port, el('button', {class: 'btn-mini', onclick: async () => {
           await saveSection('server', {port: +port.value}, 'Port gespeichert – Neustart …');
           await api('/api/restart', {body: {}});
           setTimeout(() => location.href = location.protocol + '//' + location.hostname + ':' + port.value + '/', 4000);
@@ -1070,18 +1095,18 @@ function fanPanel() {
   const cur = () => ({mode: mode.value, off_temp: +offT.value, min_temp: +minT.value, max_temp: +maxT.value, min_pwm: Math.round(+minP.value * 2.55),
     max_pwm: Math.round(+maxP.value * 2.55), emergency_temp: +emT.value, fixed_pct: +fix.value, kickstart: kick.checked});
   const redraw = () => { prev.innerHTML = ''; prev.append(fanCurveSvg(cur()));
-    $$('.fan-auto').forEach(e => e.style.display = mode.value === 'auto' ? '' : 'none'); $$('.fan-fix').forEach(e => e.style.display = mode.value === 'fixed' ? '' : 'none'); };
+    $$('.fan-auto').forEach(e => e.hidden = mode.value !== 'auto'); $$('.fan-fix').forEach(e => e.hidden = mode.value !== 'fixed'); };
   [offT, minT, maxT, minP, maxP, emT, fix, mode].forEach(i => i.addEventListener('input', redraw));
   const st = S.state.fan;
   const p = el('div', {class: 'panel', id: 'fanPanel'}, el('h3', null, 'Lüfter'),
     el('div', {class: 'form'},
       el('label', null, 'Jetzt'), el('span', {class: 'mono', id: 'fanNow'}),
       el('label', null, 'Betriebsart'), mode,
-      el('label', {class: 'fan-auto'}, 'Aus unter'), el('div', {class: 'fan-auto'}, offT, ' °C'),
-      el('label', {class: 'fan-auto'}, 'Start bei'), el('div', {class: 'fan-auto'}, minT, ' °C mit ', minP, ' %'),
-      el('label', {class: 'fan-auto'}, 'Voll bei'), el('div', {class: 'fan-auto'}, maxT, ' °C mit ', maxP, ' %'),
-      el('label', {class: 'fan-auto'}, 'Notbetrieb ab'), el('div', {class: 'fan-auto'}, emT, ' °C immer 100 %'),
-      el('label', {class: 'fan-fix'}, 'Feste Drehzahl'), el('div', {class: 'fan-fix'}, fix, ' %'),
+      el('label', {class: 'fan-auto'}, 'Aus unter'), el('div', {class: 'fan-auto row'}, offT, ' °C'),
+      el('label', {class: 'fan-auto'}, 'Start bei'), el('div', {class: 'fan-auto row'}, minT, ' °C mit ', minP, ' %'),
+      el('label', {class: 'fan-auto'}, 'Voll bei'), el('div', {class: 'fan-auto row'}, maxT, ' °C mit ', maxP, ' %'),
+      el('label', {class: 'fan-auto'}, 'Notbetrieb ab'), el('div', {class: 'fan-auto row'}, emT, ' °C immer 100 %'),
+      el('label', {class: 'fan-fix'}, 'Feste Drehzahl'), el('div', {class: 'fan-fix row'}, fix, ' %'),
       el('label', null, 'Anlaufhilfe'), el('label', {class: 'chk'}, kick, 'beim Einschalten 1 s voll anlaufen lassen'),
       el('label', {class: 'fan-auto'}, 'Kurve'), el('div', {class: 'fan-auto'}, prev,
         el('div', {class: 'muted small'}, 'orange = Drehzahl je Temperatur · grün gestrichelt = Nachlauf bis „Aus unter“ · blau = jetzt'))),
@@ -1115,7 +1140,7 @@ function updatePanel() {
       el('label', null, 'Auf GitHub'), el('span', {class: 'mono', id: 'updRem'}),
       el('label', null, 'Stand'), el('span', {class: 'mono small', id: 'updInfo'}),
       el('label', null, 'Automatisch'), el('label', {class: 'chk'}, auto, 'alle 6 Stunden nach Updates suchen'),
-      el('label', null, 'Repo / Zweig'), el('div', {style: {display: 'flex', gap: '8px'}}, repo, br,
+      el('label', null, 'Repo / Zweig'), el('div', {class: 'row'}, repo, br,
         el('button', {class: 'btn-mini', onclick: () => saveSection('update', {repo: repo.value.trim(), branch: br.value.trim() || 'main'})}, 'Speichern'))),
     el('pre', {class: 'log', id: 'updChanges', hidden: true, style: {marginTop: '14px', maxHeight: '220px'}}),
     el('div', {class: 'actions'},

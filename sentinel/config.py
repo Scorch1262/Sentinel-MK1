@@ -5,7 +5,7 @@ import os
 import threading
 
 DEFAULTS = {
-    "config_version": 3,
+    "config_version": 4,
     "server": {"host": "0.0.0.0", "port": 8096},
     "streams": [],
     "detection": {
@@ -63,7 +63,7 @@ def _merge(base, over):
     return out
 
 
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 
 
 def migrate(data):
@@ -81,6 +81,11 @@ def migrate(data):
         d.setdefault("model", "auto")
     if v < 3:
         d.setdefault("require_motion", ["person", "animal", "bike"])
+    if v < 4:
+        # v2.2.0: RTSP-Transport automatisch (TCP, bei Problemen UDP) - frueher fest TCP voreingestellt
+        for st in data.get("streams") or []:
+            if (st.get("transport") or "tcp") == "tcp":
+                st["transport"] = "auto"
     data["config_version"] = CONFIG_VERSION
     return True
 
@@ -101,7 +106,7 @@ class Config:
                 raw = open(self.path, "rb").read().decode("utf-8-sig")
                 loaded = json.loads(raw)
                 if migrate(loaded):
-                    print("config.json auf Version %d angehoben (strengere Objekterkennung)" % CONFIG_VERSION)
+                    print("config.json auf Version %d angehoben" % CONFIG_VERSION)
                 self.data = _merge(DEFAULTS, loaded)
             except Exception as e:
                 bad = self.path + ".defekt"

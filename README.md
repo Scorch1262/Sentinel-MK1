@@ -8,14 +8,15 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.1.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.2.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
 ## Funktionen
 
 - **Mehrere RTSP-Streams** gleichzeitig (auch HTTP/MJPEG oder Videodateien – alles, was ffmpeg öffnet).
-  Pro Stream einstellbar: Bilder/s, Bildbreite, TCP/UDP, „nur Keyframes“ (spart Rechenleistung).
+  Pro Stream einstellbar: Bilder/s, Bildbreite, RTSP über TCP/UDP/automatisch, „nur Keyframes“ (spart Rechenleistung).
+  „Testen“ prüft eine Kamera direkt vom Jetson aus (siehe *Kamera wird nicht angezeigt*).
 - **Automatische Erkennung** (80 Arten, NanoDet-Plus) mit Rahmenfarben je Gruppe:
 
   | Gruppe | Farbe | Arten |
@@ -184,6 +185,23 @@ Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen
 Im Live-Bild erscheinen nur noch bestätigte Objekte. Unter Einstellungen → Objekterkennung zeigt
 „Verworfen“, wie oft jede Stufe seit dem Start eingegriffen hat.
 
+## Kamera wird nicht angezeigt
+
+Unter **Einstellungen → Streams** hat jeder Stream den Knopf **Testen**. Der Jetson prüft dann
+selbst Schritt für Schritt: Ist die Kamera erreichbar, was antwortet sie auf RTSP
+(z. B. `401` = Passwort falsch, `404` = Pfad falsch, `503` = Kamera noch nicht bereit),
+kommen Videodaten über **TCP** und über **UDP** an, und erkennt ffprobe das Bild.
+Der rot markierte Schritt zeigt, woran es hängt; passt ein anderer Transport, gibt es
+eine Empfehlung zum Übernehmen.
+
+**RTSP: automatisch** (Standard) verbindet zuerst über TCP und wechselt auf UDP, wenn die
+Kamera darüber keine Bilder liefert – so wie VLC, das standardmäßig UDP nutzt. Läuft ein
+Stream in VLC, aber nicht in Sentinel, liegt es meist genau daran. Welcher Weg gerade
+genutzt wird, steht unter dem Stream („Aktiv: … RTSP UDP (auto)“).
+
+Weitere Ursachen: Manche Kameras erlauben nur wenige gleichzeitige Verbindungen – offene
+VLC-Fenster schließen. Bei UDP muss der Jetson die Kamera ohne NAT erreichen (gleiches Netz).
+
 ## Personen anlegen und Erkennungen zuweisen
 
 - **Person anlegen:** Objekte → **„+ Person anlegen“** (Name, Art, Kategorie). Danach öffnet sich
@@ -242,6 +260,7 @@ sentinel/
   fan.py               Lüfterregelung für den Jetson (PWM-Kurve)
   onnxlite.py          CPU-Rückfall: KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
   streams.py           Empfang per GStreamer mit Hardware-Dekoder (NVDEC), Rückfall ffmpeg
+  streamtest.py        Stream-Test: Netzwerk, RTSP-Antworten, Empfang über TCP und UDP
   store.py             SQLite-Datenbank
   web.py               Webserver + JSON-API
   updater.py           Updates aus dem GitHub-Repo (Sicherung, Installation, Neustart)

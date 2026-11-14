@@ -14,6 +14,7 @@ import collections
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import threading
@@ -109,13 +110,13 @@ def mask_url(url):
     return re.sub(r"(://[^:/@]+:)[^@]*@", r"\1***@", url or "")
 
 
-def probe(url, timeout=25):
+def probe(url, timeout=25, transport="tcp"):
     """Codec und Aufloesung des ersten Videostroms ermitteln: (codec, breite, hoehe) oder (None, None, None)."""
     fp = find_tool("ffprobe")
     if fp:
         cmd = [fp, "-v", "error"]
         if url.lower().startswith("rtsp"):
-            cmd += ["-rtsp_transport", "tcp"]
+            cmd += ["-rtsp_transport", transport or "tcp"]
         cmd += ["-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", url]
         try:
             out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
@@ -165,6 +166,10 @@ class StreamWorker(threading.Thread):
         self._fps_n = 0
         self.restarts = 0
         self.probed = None
+        tr = (cfg.get("transport") or "auto").lower()
+        self.auto_tr = tr not in ("tcp", "udp")
+        self.proto = "tcp" if self.auto_tr else tr   # aktuell genutzter RTSP-Transport
+        self.fail_tr = 0
 
     # ------------------------------------------------------------------
     def stop(self):
@@ -189,7 +194,14 @@ class StreamWorker(threading.Thread):
         if self.probed is None or not self.probed[0]:
             url = self.cfg.get("url", "").strip()
             self.status = "prüfe Stream"
-            self.probed = probe(url)
+            self.probed = probe(url, transport=self.proto)
+            if not self.probed[0] and self.auto_tr and url.lower().startswith("rtsp"):
+                other = "udp" if self.proto == "tcp" else "tcp"
+                res = probe(url, transport=other)
+                if res[0]:
+                    self.log("Stream %s: antwortet nur per %s - nutze %s"
+                             % (self.cfg.get("name", self.id), other.upper(), other.upper()))
+                    self.proto, self.probed = other, res
             if self.probed[0]:
                 self.log("Stream %s: %s %dx%d" % (self.cfg.get("name", self.id), self.probed[0], self.probed[1],
                                                      self.probed[2]))
@@ -233,12 +245,19 @@ class StreamWorker(threading.Thread):
         c = self.cfg
         url = c.get("url", "").strip()
         width = self._out_size(None, None)[0]
+        scale = "%d:-2" % width
+        pr = self.probed if (self.probed and self.probed[1]) else None
+        if pr:
+            # Ausgabegroesse vorab festlegen -> Rohbild-Leser startet sofort (kein Warten auf das erste JPEG)
+            ow, oh = self._out_size(pr[1], pr[2])
+            scale = "%d:%d" % (ow, oh)
+            self.size = (ow, oh)
         cmd = [ff, "-hide_banner", "-loglevel", "error", "-nostdin"]
         if c.get("keyframes_only"):
             cmd += ["-skip_frame", "nokey"]
         is_file = "://" not in url
         if url.lower().startswith("rtsp"):
-            cmd += ["-rtsp_transport", c.get("transport", "tcp") or "tcp"]
+            cmd += ["-rtsp_transport", self.proto]
             v = ffmpeg_major(ff)
             # ffmpeg < 5: -stimeout (bei 4.x wuerde -timeout den Empfangsmodus einschalten)
             if 0 < v < 5:
@@ -248,9 +267,9 @@ class StreamWorker(threading.Thread):
         if is_file:
             cmd += ["-re", "-stream_loop", "-1"]
         cmd += ["-fflags", "nobuffer+discardcorrupt", "-i", url, "-an", "-sn", "-dn",
-                "-filter_complex", "[0:v]fps=%g,scale=%d:-2,split=2[a0][b];[a0]format=yuvj420p[a]"
-                % (self._fps(), width),
-                "-map", "[a]", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", str(int(c.get("jpeg_q", 5) or 5)),
+                "-filter_complex", "[0:v]fps=%g,scale=%s,split=2[a0][b];[a0]format=yuvj420p[a]"
+                % (self._fps(), scale),
+                "-map", "[a]", "-f", "image2pipe", "-flush_packets", "1", "-c:v", "mjpeg", "-q:v", str(int(c.get("jpeg_q", 5) or 5)),
                 "pipe:1",
                 "-map", "[b]", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:%d" % wfd]
         return cmd
@@ -268,7 +287,7 @@ class StreamWorker(threading.Thread):
                  % (("H265", "rtph265depay ! h265parse") if h265 else ("H264", "rtph264depay ! h264parse")))
         fr = Fraction(self._fps()).limit_denominator(10)
         q = '"%s"' % url.replace("\\", "\\\\").replace('"', '\\"')
-        proto = "tcp" if (c.get("transport") or "tcp") == "tcp" else "udp"
+        proto = self.proto
         if hw:
             dec = "nvv4l2decoder"
             if gst_prop("nvv4l2decoder", "enable-max-performance"):
@@ -308,6 +327,7 @@ class StreamWorker(threading.Thread):
                 self.status, self.error = "verbinde", ""
                 if mode == "ffmpeg":
                     self.size = None
+                    self._probe()   # Groesse + (bei RTSP "auto") funktionierenden Transport ermitteln
                     cmd = self._ffmpeg_cmd(find_ffmpeg(), w)
                 else:
                     cmd = self._gst_cmd(w, mode == "nvdec")
@@ -344,6 +364,13 @@ class StreamWorker(threading.Thread):
             lines = list(errbuf)
             errs = [l for l in lines if "ERROR" in l or "rror" in l or "keine Bilder" in l]
             msg = " | ".join((errs or lines)[-3:]) or "Verbindung beendet"
+            low = msg.lower()
+            if self.proto == "tcp" and not self.auto_tr and ("protocol not supported" in low or "461" in low):
+                msg += " - Tipp: Kamera kann kein RTSP über TCP, Transport auf automatisch oder UDP stellen"
+            elif "401" in low or "unauthorized" in low:
+                msg += " - Tipp: Benutzer/Passwort im Link prüfen"
+            elif "404" in low:
+                msg += " - Tipp: Pfad hinter dem Port prüfen"
             if mode in ("nvdec", "gst") and not got:
                 self.fail_hw += 1
                 if self.fail_hw >= 2:
@@ -351,7 +378,18 @@ class StreamWorker(threading.Thread):
                              % (self.cfg.get("name", self.id), msg[-200:]))
             elif got:
                 self.fail_hw = 0
-            self.status, self.error = "getrennt", msg[-300:]
+            if got:
+                self.fail_tr = 0
+            elif self.auto_tr and self.cfg.get("url", "").lower().startswith("rtsp"):
+                self.fail_tr += 1
+                if self.fail_tr >= 2:
+                    # wie VLC: klappt TCP nicht, mit UDP versuchen (und umgekehrt)
+                    self.proto = "udp" if self.proto == "tcp" else "tcp"
+                    self.fail_tr = 0
+                    self.probed = None
+                    self.log("Stream %s: keine Bilder - versuche RTSP ueber %s"
+                             % (self.cfg.get("name", self.id), self.proto.upper()))
+            self.status, self.error = "getrennt", msg[-400:]
             self.restarts += 1
             self.log("Stream %s: %s - neuer Versuch" % (self.cfg.get("name", self.id), msg[-160:]))
             backoff = 2 if got else min(60, backoff * 2)
@@ -435,19 +473,33 @@ class StreamWorker(threading.Thread):
         f = os.fdopen(fd, "rb", buffering=0)
         idx = 0
         got = False
+        pre = bytearray()   # Rohdaten, die vor Bekanntwerden der Bildgroesse ankommen (sonst blockiert ffmpeg)
         try:
             while not self.stop_ev.is_set():
                 t0 = time.time()
                 while self.size is None and not self.stop_ev.is_set():
                     if self.proc is None or self.proc.poll() is not None or time.time() - t0 > 30:
                         return got
-                    time.sleep(0.05)
+                    rd, _, _ = select.select([fd], [], [], 0.05)
+                    if rd:
+                        d = os.read(fd, 1 << 20)
+                        if not d:
+                            return got
+                        pre += d
+                        if len(pre) > (64 << 20):
+                            del pre[:len(pre) - (32 << 20)]
+                if self.size is None:
+                    return got
                 w, h = self.size
                 ch = 4 if gst else 3
                 n = w * h * ch
                 buf = bytearray(n)
                 mv = memoryview(buf)
                 k = 0
+                if pre:
+                    k = min(n, len(pre))
+                    buf[:k] = pre[:k]
+                    del pre[:k]
                 while k < n:
                     r = f.readinto(mv[k:])
                     if not r:
@@ -537,6 +589,8 @@ class StreamWorker(threading.Thread):
 
     def info(self):
         dec = {"nvdec": "NVDEC", "gst": "GStreamer", "ffmpeg": "ffmpeg"}.get(self.mode or "", "")
+        rtsp = self.cfg.get("url", "").lower().startswith("rtsp")
         return dict(id=self.id, name=self.cfg.get("name", self.id), status=self.status, error=self.error,
                     fps=round(self.fps, 1), size=self.size, restarts=self.restarts, decoder=dec,
+                    transport=(self.proto.upper() + (" (auto)" if self.auto_tr else "")) if rtsp else "",
                     online=self.status == "live" and time.time() - self.last_ts < 15)

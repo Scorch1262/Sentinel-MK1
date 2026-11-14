@@ -267,6 +267,16 @@ class Api:
                 if any(new.get(k) != old.get(k) for k in ("model", "model_size", "use_opencv", "accel")):
                     threading.Thread(target=e.reload_detector, daemon=True).start()
             return dict(ok=True)
+        if path == "/api/streams/test":
+            url = (body.get("url") or "").strip()
+            old = next((x for x in e.cfg.get("streams") if x["id"] == body.get("id")), None)
+            if old and ("***" in url or not url):
+                url = old.get("url", "")
+            from .streamtest import run_test
+            res = run_test(url)
+            e.log("Stream-Test %s: %s" % (mask(url), " | ".join(
+                "%s %s" % (st["name"], {True: "ok", False: "FEHLER", None: "-"}[st["ok"]]) for st in res["steps"])))
+            return res
         if path == "/api/streams":
             lst = []
             for s in body.get("streams", []):
@@ -278,7 +288,7 @@ class Api:
                 lst.append(dict(id=sid, name=(s.get("name") or sid).strip()[:60], url=url,
                                 enabled=bool(s.get("enabled", True)), detect=bool(s.get("detect", True)),
                                 fps=float(s.get("fps") or 2), width=int(s.get("width") or 640),
-                                keyframes_only=bool(s.get("keyframes_only")), transport=s.get("transport") or "tcp",
+                                keyframes_only=bool(s.get("keyframes_only")), transport=s.get("transport") if s.get("transport") in ("auto", "tcp", "udp") else "auto",
                                 decoder=s.get("decoder") if s.get("decoder") in ("auto", "nvdec", "gst", "ffmpeg") else "auto"))
             e.cfg.update("streams", lst)
             e.sync_streams()
