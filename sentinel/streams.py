@@ -185,16 +185,35 @@ class StreamWorker(threading.Thread):
                 except Exception:
                     pass
 
+    def _probe(self):
+        if self.probed is None or not self.probed[0]:
+            url = self.cfg.get("url", "").strip()
+            self.status = "prüfe Stream"
+            self.probed = probe(url)
+            if self.probed[0]:
+                self.log("Stream %s: %s %dx%d" % (self.cfg.get("name", self.id), self.probed[0], self.probed[1],
+                                                     self.probed[2]))
+            else:
+                self.log("Stream %s: Codec/Größe nicht ermittelbar" % self.cfg.get("name", self.id))
+        return self.probed
+
     def _choose_mode(self):
         url = self.cfg.get("url", "").strip()
         want = self.cfg.get("decoder") or "auto"
         rtsp = url.lower().startswith("rtsp")
         if want == "ffmpeg" or not rtsp:
             return "ffmpeg"
-        if want in ("auto", "nvdec") and self.fail_hw < 2 and nvdec_available():
-            return "nvdec"
-        if want == "gst" and find_tool("gst-launch-1.0") and have_cv2():
-            return "gst"
+        hw_ok = want in ("auto", "nvdec") and self.fail_hw < 2 and nvdec_available()
+        sw_ok = want == "gst" and self.fail_hw < 2 and find_tool("gst-launch-1.0") and have_cv2()
+        if hw_ok or sw_ok:
+            codec = (self._probe()[0] or "").lower()
+            if codec not in ("h264", "hevc", "h265"):
+                # MJPEG, MPEG-4 o. ae. bzw. unbekannt: ffmpeg (MJPEG ist ohnehin kaum Rechenarbeit)
+                if codec and self.mode != "ffmpeg":
+                    self.log("Stream %s: Codec %s - Hardware-Dekoder nur fuer H.264/H.265, nutze ffmpeg"
+                             % (self.cfg.get("name", self.id), codec))
+                return "ffmpeg"
+            return "nvdec" if hw_ok else "gst"
         return "ffmpeg"
 
     def _out_size(self, w, h):
@@ -229,7 +248,8 @@ class StreamWorker(threading.Thread):
         if is_file:
             cmd += ["-re", "-stream_loop", "-1"]
         cmd += ["-fflags", "nobuffer+discardcorrupt", "-i", url, "-an", "-sn", "-dn",
-                "-filter_complex", "[0:v]fps=%g,scale=%d:-2,split=2[a][b]" % (self._fps(), width),
+                "-filter_complex", "[0:v]fps=%g,scale=%d:-2,split=2[a0][b];[a0]format=yuvj420p[a]"
+                % (self._fps(), width),
                 "-map", "[a]", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", str(int(c.get("jpeg_q", 5) or 5)),
                 "pipe:1",
                 "-map", "[b]", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:%d" % wfd]
@@ -239,17 +259,13 @@ class StreamWorker(threading.Thread):
     def _gst_cmd(self, wfd, hw):
         c = self.cfg
         url = c.get("url", "").strip()
-        if self.probed is None:
-            self.status = "prüfe Stream"
-            self.probed = probe(url)
-            if self.probed[0]:
-                self.log("Stream %s: %s %dx%d" % (c.get("name", self.id), self.probed[0], self.probed[1],
-                                                     self.probed[2]))
-        codec, w, h = self.probed
+        codec, w, h = self._probe()
         ow, oh = self._out_size(w, h)
         self.size = (ow, oh)
         h265 = (codec or "").lower() in ("hevc", "h265")
-        depay = "rtph265depay ! h265parse" if h265 else "rtph264depay ! h264parse"
+        # Caps-Filter: nur der Video-Teil des RTSP-Streams wird verbunden (Ton bleibt unberuehrt)
+        depay = ("application/x-rtp,media=video,encoding-name=%s ! queue ! %s"
+                 % (("H265", "rtph265depay ! h265parse") if h265 else ("H264", "rtph264depay ! h264parse")))
         fr = Fraction(self._fps()).limit_denominator(10)
         q = '"%s"' % url.replace("\\", "\\\\").replace('"', '\\"')
         proto = "tcp" if (c.get("transport") or "tcp") == "tcp" else "udp"
@@ -295,9 +311,12 @@ class StreamWorker(threading.Thread):
                     cmd = self._ffmpeg_cmd(find_ffmpeg(), w)
                 else:
                     cmd = self._gst_cmd(w, mode == "nvdec")
+                env = dict(os.environ)
+                if mode != "ffmpeg":
+                    env.update(GST_DEBUG="2", GST_DEBUG_NO_COLOR="1")
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE if mode == "ffmpeg" else subprocess.DEVNULL,
                                              stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, pass_fds=(w,),
-                                             bufsize=0)
+                                             bufsize=0, env=env)
             except Exception as e:
                 os.close(r)
                 os.close(w)
@@ -306,7 +325,9 @@ class StreamWorker(threading.Thread):
                 continue
             os.close(w)
             self.started = time.time()
-            errbuf = collections.deque(maxlen=6)
+            self.last_ts = 0.0
+            errbuf = collections.deque(maxlen=8)
+            threading.Thread(target=self._watch_start, args=(self.proc, errbuf), daemon=True).start()
             t_err = threading.Thread(target=self._read_err, args=(self.proc.stderr, errbuf), daemon=True)
             t_err.start()
             if mode == "ffmpeg":
@@ -320,13 +341,14 @@ class StreamWorker(threading.Thread):
                 self._kill()
             if self.stop_ev.is_set():
                 break
-            msg = " | ".join(errbuf) or "Verbindung beendet"
+            lines = list(errbuf)
+            errs = [l for l in lines if "ERROR" in l or "rror" in l or "keine Bilder" in l]
+            msg = " | ".join((errs or lines)[-3:]) or "Verbindung beendet"
             if mode in ("nvdec", "gst") and not got:
                 self.fail_hw += 1
-                if self.fail_hw >= 2 and mode == "nvdec":
-                    self.log("Stream %s: Hardware-Dekoder liefert keine Bilder (%s) - wechsle zu ffmpeg"
-                             % (self.cfg.get("name", self.id), msg[-160:]))
-                    self.probed = None
+                if self.fail_hw >= 2:
+                    self.log("Stream %s: GStreamer liefert keine Bilder (%s) - wechsle zu ffmpeg"
+                             % (self.cfg.get("name", self.id), msg[-200:]))
             elif got:
                 self.fail_hw = 0
             self.status, self.error = "getrennt", msg[-300:]
@@ -336,11 +358,34 @@ class StreamWorker(threading.Thread):
             self.stop_ev.wait(backoff)
         self.status = "gestoppt"
 
+    START_TIMEOUT = 25
+
+    def _watch_start(self, proc, errbuf):
+        """Kein erstes Bild nach START_TIMEOUT s -> Prozess beenden (Fehlerzaehler/Rueckfall greift)."""
+        t0 = time.time()
+        while not self.stop_ev.is_set() and proc.poll() is None:
+            if self.last_ts:
+                return
+            if time.time() - t0 > self.START_TIMEOUT:
+                errbuf.append("keine Bilder nach %d s" % self.START_TIMEOUT)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                return
+            time.sleep(0.5)
+
     def _read_err(self, f, buf):
         for line in iter(f.readline, b""):
             t = line.decode("utf-8", "replace").strip()
             if t:
-                buf.append(mask_url(t))
+                # GStreamer-Debugzeilen kuerzen: nur die Meldung hinter dem Elementnamen
+                t = re.sub(r"^\S+\s+\d+\s+0x[0-9a-f]+\s+(WARN|ERROR)\s+", r"\1 ", t)
+                buf.append(mask_url(t)[:300])
 
     def _tick(self, now):
         self.last_ts = now

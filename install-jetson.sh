@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=1.2.1
+VERSION=1.2.2
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""

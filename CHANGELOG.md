@@ -1,5 +1,15 @@
 # Änderungen
 
+## 1.2.2
+- Kamerabilder auf dem Jetson: MJPEG-Kameras laufen automatisch über ffmpeg
+  (Hardware-Dekoder nur für H.264/H.265), statt mit „not-linked“ abzubrechen
+- GStreamer verbindet nur noch den Video-Teil des RTSP-Streams (Kameras mit Ton)
+- Startwächter: kommt nach 25 s kein Bild, wird neu verbunden; nach zwei
+  Fehlversuchen wechselt der Stream automatisch auf ffmpeg
+- ffmpeg-Weg mit älteren ffmpeg-Versionen (Jetson 3.4): JPEG aus H.264/H.265
+  funktioniert jetzt („Non full-range YUV“)
+- Aussagekräftigere Fehlermeldungen im Protokoll
+
 ## 1.2.1
 - Jetson-Installer: Paketlisten werden zuerst geladen (frischer Jetson: „kein
   Installationskandidat für curl“), Downloads klappen auch ohne curl (wget bzw. Python)
