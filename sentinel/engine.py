@@ -211,6 +211,7 @@ class Engine:
         self.det = None
         self.faces = None
         self.det_lock = threading.Lock()
+        self.build_pause = False
         self.det_ms = collections.deque(maxlen=30)
         self.det_passes = collections.deque(maxlen=30)
         self.face_ms = collections.deque(maxlen=30)
@@ -233,6 +234,15 @@ class Engine:
 
     def start(self):
         self.log("Sentinel MK1 v%s startet (Daten: %s)" % (self.version, self.data_dir))
+        if sysinfo.is_jetson():
+            self.log("Speicher: %s" % sysinfo.memory_text())
+            try:
+                swap = [l for l in open("/proc/meminfo") if l.startswith("SwapTotal")][0].split()[1]
+                if int(swap) < 2 * 1048576:
+                    self.log("WARNUNG: weniger als 2 GB Auslagerung - für 2 GB RAM zu wenig (Abstürze, Engine-Bau "
+                             "scheitert). Abhilfe: sudo bash install-jetson.sh erneut ausführen (legt 4 GB an).")
+            except Exception:
+                pass
         if not find_ffmpeg():
             self.log("WARNUNG: ffmpeg fehlt - Jetson: sudo apt-get install ffmpeg (bzw. install-jetson.sh erneut ausführen)")
         if sysinfo.is_jetson() or os.environ.get("SENTINEL_FAN_SYSFS"):
@@ -271,11 +281,14 @@ class Engine:
                 d = self.cfg.get("detection")
                 use_cv2 = bool(d.get("use_opencv", True))
                 gpu = self.use_gpu()
-                if gpu and self.models.all_ok() and any(not self.models.engine_ok(k) and
-                                                        self.models.engine_state.get(k) != "fehler"
-                                                        for k in self.models.ENGINES if k in self.wanted_models()):
-                    # Engines fehlen: einmalig bauen, bis dahin auf der CPU rechnen
-                    self.models.build_engines(on_done=self.load_models)
+                if self.build_pause:
+                    return
+                if gpu and self.models.all_ok() and self.models.engines_missing():
+                    # Engines fehlen: einmalig bauen. Auf dem Jetson Nano 2GB reicht der Speicher nur,
+                    # wenn Streams und KI-Modelle so lange angehalten werden.
+                    self.build_pause = True
+                    self.models.build_engines(on_done=self._resume_after_build, before=self._pause_for_build)
+                    return
                 choice = self.detector_choice()
                 spec = DETECTORS[choice]
                 key = spec["key"]
@@ -340,6 +353,38 @@ class Engine:
                 self.log(self.engine_error)
                 traceback.print_exc()
 
+    def _pause_for_build(self):
+        names = ", ".join(self.models.ENGINES[k] for k in self.models.engines_missing())
+        self.log("GPU-Engines fehlen (%s): Streams und Erkennung werden für den einmaligen Bau angehalten "
+                 "(ca. 5–20 Minuten) – %s" % (names, sysinfo.memory_text()))
+        with self.lock:
+            for w in self.workers.values():
+                w.stop()
+            self.workers.clear()
+            self.tracks.clear()
+            self.live.clear()
+        with self.det_lock:
+            for obj in (self.det, self.faces):
+                for attr in ("net", "det", "rec"):
+                    n = getattr(obj, attr, None)
+                    if n is not None and hasattr(n, "close"):
+                        try:
+                            n.close()
+                        except Exception:
+                            pass
+            self.det = None
+            self.faces = None
+        import gc
+        gc.collect()
+        time.sleep(3)    # ffmpeg/GStreamer-Prozesse beenden lassen
+        self.log("Speicher vor dem Bau: %s" % sysinfo.memory_text())
+
+    def _resume_after_build(self):
+        self.build_pause = False
+        self.log("Engine-Bau beendet - Streams und Erkennung laufen wieder")
+        self.sync_streams()
+        self.load_models()
+
     def reload_detector(self):
         self.load_models()
 
@@ -347,6 +392,8 @@ class Engine:
     # Streams
     # ------------------------------------------------------------------
     def sync_streams(self):
+        if self.build_pause:
+            return
         want = {s["id"]: s for s in self.cfg.get("streams") if s.get("enabled", True)}
         with self.lock:
             for sid in list(self.workers):
@@ -1346,6 +1393,11 @@ class Engine:
     def status(self):
         with self.lock:
             ws = [w.info() for w in self.workers.values()]
+        if self.build_pause:
+            ws = [dict(id=s["id"], name=s.get("name", s["id"]), status="pausiert", fps=0, size=None, restarts=0,
+                       decoder="", transport="", online=False,
+                       error="angehalten, solange die GPU-Engine gebaut wird (einmalig, einige Minuten)")
+                  for s in self.cfg.get("streams") if s.get("enabled", True)]
         dm = list(self.det_ms)
         fm = list(self.face_ms)
         load = None

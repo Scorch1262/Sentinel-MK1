@@ -78,6 +78,19 @@ def memory():
         return None
 
 
+def memory_text():
+    """z. B. 'RAM frei 1.1/1.9 GB, Auslagerung 3.8 GB (frei 3.5 GB)'"""
+    try:
+        info = {}
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            info[k] = int(v.strip().split()[0]) / 1048576.0
+        return "RAM frei %.1f/%.1f GB, Auslagerung %.1f GB (frei %.1f GB)" % (
+            info.get("MemAvailable", 0), info["MemTotal"], info.get("SwapTotal", 0), info.get("SwapFree", 0))
+    except Exception:
+        return "Speicher unbekannt"
+
+
 def system_stats():
     m = memory()
     return dict(gpu=gpu_load(), temp=temperature(), mem_used=m[0] if m else None, mem_total=m[1] if m else None,

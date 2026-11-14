@@ -1,5 +1,18 @@
 # Änderungen
 
+## 2.3.1
+- GPU-Engine-Bau auf dem Jetson Nano 2GB: Streams und KI-Modelle werden für den einmaligen Bau
+  angehalten, trtexec baut speichersparend (ohne cuBLAS/cuDNN-Taktiken) und versucht es bei
+  Speichermangel ein zweites Mal mit weniger Arbeitsspeicher – vorher brach der Bau mit
+  „Code -9“ ab (vom System wegen Speichermangel beendet)
+- Gescheiterter Engine-Bau wird gemerkt und nicht bei jedem Neustart wiederholt; neuer Knopf
+  „GPU-Engine erneut bauen“ unter System
+- Behoben: Dauerte die NVDEC-Prüfung (gst-inspect) beim Start zu lange, liefen alle Streams bis
+  zum nächsten Neustart über ffmpeg auf der CPU statt über den Hardware-Dekoder
+- Protokoll: Grund, wenn kein Hardware-Dekoder genutzt wird; Startfehler von Streams (z. B. zu
+  wenig Arbeitsspeicher) werden angezeigt; „Codec/Größe nicht ermittelbar“ nur noch einmal
+- Beim Start: Speicher und Auslagerung im Protokoll, Warnung bei weniger als 2 GB Auslagerung
+
 ## 2.3.0
 - Kachel-Analyse (Standard mit GPU): große Kamerabilder werden zusätzlich in 2–4 überlappenden
   Ausschnitten geprüft – deutlich mehr kleine, weit entfernte Personen werden gefunden;

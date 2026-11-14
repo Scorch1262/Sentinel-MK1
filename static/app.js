@@ -1042,6 +1042,9 @@ async function loadSettings() {
         }}, 'Übernehmen + Neustart'))),
     el('h4', null, 'KI-Modelle'), mt,
     el('div', {class: 'actions'}, el('button', {class: 'btn-mini', onclick: async () => { await api('/api/models/download', {body: {}}); toast('Download gestartet'); }}, 'Fehlende Modelle laden'),
+      (S.state.engines || []).some(x => x.state === 'fehler') ? el('button', {class: 'btn-mini', title: 'Streams und Erkennung werden dafür einige Minuten angehalten', onclick: async () => {
+        if (!confirm('GPU-Engine erneut bauen? Streams und Erkennung pausieren dafür ca. 5–20 Minuten.')) return;
+        await api('/api/engines/retry', {body: {}}); toast('Engine-Bau gestartet – siehe Protokoll'); }}, 'GPU-Engine erneut bauen') : null,
       el('button', {class: 'btn-mini', onclick: async () => { if (!confirm('Sentinel neu starten?')) return; await api('/api/restart', {body: {}}); toast('Neustart …'); }}, 'Neu starten')),
     el('h4', null, 'Protokoll'), lg));
   if (S.state.fan && S.state.fan.available) box.append(fanPanel());

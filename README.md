@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.3.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.3.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 

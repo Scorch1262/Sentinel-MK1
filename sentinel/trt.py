@@ -8,6 +8,7 @@ import glob
 import os
 import shutil
 import subprocess
+import time
 import threading
 
 import numpy as np
@@ -170,24 +171,43 @@ def build_engine(onnx_path, engine_path, log, workspace_mb=256, fp16=True, timeo
         log("trtexec nicht gefunden (/usr/src/tensorrt/bin/trtexec) - GPU-Beschleunigung nicht moeglich")
         return False
     tmp = engine_path + ".part"
-    cmd = [exe, "--onnx=%s" % onnx_path, "--saveEngine=%s" % tmp, "--workspace=%d" % workspace_mb]
-    if fp16:
-        cmd.append("--fp16")
-    log("Baue TensorRT-Engine %s (einmalig, einige Minuten) ..." % os.path.basename(engine_path))
+    major = 0
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-        txt = p.stdout.decode("utf-8", "replace")
-    except Exception as e:
-        log("trtexec: %s" % e)
-        return False
-    if p.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1000:
-        tail = " | ".join([l for l in txt.splitlines() if "ERROR" in l or "error" in l][-3:])
-        log("Engine-Bau fehlgeschlagen: %s" % (tail or "Code %s" % p.returncode))
+        major = int((trt_version() or "0").split(".")[0])
+    except ValueError:
+        pass
+    for attempt, ws in enumerate((workspace_mb, 64)):
+        cmd = [exe, "--onnx=%s" % onnx_path, "--saveEngine=%s" % tmp, "--workspace=%d" % ws]
+        if fp16:
+            cmd.append("--fp16")
+        if major >= 8:
+            # cuBLAS/cuDNN-Taktiken weglassen: spart beim Bauen mehrere hundert MB (Jetson Nano 2GB)
+            cmd.append("--tacticSources=-cublasLt,-cublas,-cudnn")
+        log("Baue TensorRT-Engine %s (einmalig, einige Minuten)%s ..."
+            % (os.path.basename(engine_path), " - zweiter Versuch mit weniger Speicher" if attempt else ""))
+        t0 = time.time()
+        try:
+            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+            txt = p.stdout.decode("utf-8", "replace")
+        except Exception as e:
+            log("trtexec: %s" % e)
+            return False
+        if p.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) >= 1000:
+            break
         try:
             os.remove(tmp)
         except OSError:
             pass
+        if p.returncode in (-9, 137):
+            log("Engine-Bau abgebrochen: vom System beendet, Arbeitsspeicher reicht nicht (RAM + Auslagerung). "
+                "Tipp: Auslagerungsdatei pruefen (free -h), Desktop abschalten.")
+            continue
+        tail = " | ".join([l for l in txt.splitlines() if "ERROR" in l or "error" in l][-3:])
+        log("Engine-Bau fehlgeschlagen: %s" % (tail or "Code %s" % p.returncode))
         return False
+    else:
+        return False
+    log("(Bauzeit %d s)" % (time.time() - t0))
     os.replace(tmp, engine_path)
     log("TensorRT-Engine fertig: %s" % os.path.basename(engine_path))
     return True

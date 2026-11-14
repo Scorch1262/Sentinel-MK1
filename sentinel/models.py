@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import urllib.request
 
 ZOO = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
@@ -114,8 +115,34 @@ class ModelManager:
                      state="ok" if self.engine_ok(k) else self.engine_state.get(k, "fehlt"))
                 for k in self.ENGINES if k in w]
 
-    def build_engines(self, on_done=None):
-        """Fehlende Engines im Hintergrund bauen (nacheinander, braucht viel Speicher)."""
+    def engines_missing(self):
+        out = []
+        for k in self.ENGINES:
+            if k not in self.wanted() or self.engine_ok(k) or self.state.get(k) != "ok":
+                continue
+            if self.engine_state.get(k) == "fehler":
+                continue
+            if os.path.exists(self.engine_path(k) + ".failed"):
+                self.engine_state[k] = "fehler"      # frueher gescheitert: erst wieder auf Knopfdruck
+                continue
+            out.append(k)
+        return out
+
+    def retry_engines(self):
+        """Gescheiterte Engines erneut zum Bau freigeben (Knopf in der Oberflaeche)."""
+        for k in self.ENGINES:
+            p = self.engine_path(k) + ".failed"
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            if self.engine_state.get(k) == "fehler":
+                self.engine_state.pop(k, None)
+
+    def build_engines(self, on_done=None, before=None):
+        """Fehlende Engines im Hintergrund bauen (nacheinander, braucht viel Speicher).
+        before() wird vorher aufgerufen (z. B. Streams anhalten, damit der Speicher reicht)."""
         from . import trt
         with self.lock:
             if self.building:
@@ -124,6 +151,8 @@ class ModelManager:
 
         def run():
             try:
+                if before:
+                    before()
                 for k in self.ENGINES:
                     if k not in self.wanted():
                         continue
@@ -132,6 +161,16 @@ class ModelManager:
                     self.engine_state[k] = "baut"
                     ok = trt.build_engine(self.path(k), self.engine_path(k), self.log)
                     self.engine_state[k] = "ok" if ok else "fehler"
+                    mark = self.engine_path(k) + ".failed"
+                    try:
+                        if ok:
+                            if os.path.exists(mark):
+                                os.remove(mark)
+                        else:
+                            # merken: nicht bei jedem Neustart erneut minutenlang versuchen
+                            open(mark, "w").write(str(int(time.time())))
+                    except OSError:
+                        pass
             finally:
                 self.building = False
                 if on_done:

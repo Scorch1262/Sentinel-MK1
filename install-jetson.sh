@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=2.3.0
+VERSION=2.3.1
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -209,7 +209,9 @@ if [ -n "$TRTV" ] && [ -x "$TRTEXEC" ]; then
         [ -f "$DIR/data/models/$1" ] || return 1
         log "Baue GPU-Engine $2 mit TensorRT $TRTV (bitte warten, dauert einige Minuten) ..."
         local t0=$(date +%s)
-        if "$TRTEXEC" --onnx="$DIR/data/models/$1" --saveEngine="$e.part" --fp16 --workspace=256 \
+        local extra=""
+        case "$TRTV" in 8.*|9.*|1[0-9].*) extra="--tacticSources=-cublasLt,-cublas,-cudnn" ;; esac
+        if "$TRTEXEC" --onnx="$DIR/data/models/$1" --saveEngine="$e.part" --fp16 --workspace=256 $extra \
                 > "$DIR/data/models/$2.trtexec.log" 2>&1 && [ -s "$e.part" ]; then
             mv -f "$e.part" "$e"
             ok "GPU-Engine $2 fertig ($(( $(date +%s) - t0 )) s)"

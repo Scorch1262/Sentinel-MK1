@@ -425,6 +425,10 @@ class Api:
         if path == "/api/models/download":
             e.models.ensure(on_done=e.load_models)
             return dict(ok=True)
+        if path == "/api/engines/retry":
+            e.models.retry_engines()
+            threading.Thread(target=e.load_models, daemon=True).start()
+            return dict(ok=True)
         if path == "/api/cleanup":
             threading.Thread(target=e.cleanup, daemon=True).start()
             return dict(ok=True)

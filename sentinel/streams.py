@@ -59,19 +59,26 @@ def ffmpeg_major(ff):
     return _FFVER[ff]
 
 
+_GST_LOCK = threading.Lock()
+
+
 def _gst_inspect(element):
-    if element not in _GST:
-        txt = None
+    """Ergebnis von gst-inspect (gecacht). Zeitueberschreitung wird NICHT gemerkt: beim ersten Aufruf
+    baut GStreamer seine Plugin-Liste neu auf - unter Last (Start, Engine-Bau) dauert das lange.
+    Frueher wurde dann dauerhaft 'kein NVDEC' angenommen und alles lief ueber ffmpeg (CPU)."""
+    with _GST_LOCK:
+        if element in _GST:
+            return _GST[element]
         tool = find_tool("gst-inspect-1.0")
-        if tool:
-            try:
-                p = subprocess.run([tool, element], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
-                if p.returncode == 0:
-                    txt = p.stdout.decode("utf-8", "replace")
-            except Exception:
-                txt = None
-        _GST[element] = txt
-    return _GST[element]
+        if not tool:
+            _GST[element] = None
+            return None
+        try:
+            p = subprocess.run([tool, element], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=90)
+        except Exception:
+            return None                       # nicht cachen -> spaeter erneut pruefen
+        _GST[element] = p.stdout.decode("utf-8", "replace") if p.returncode == 0 else None
+        return _GST[element]
 
 
 def gst_has(element):
@@ -206,7 +213,10 @@ class StreamWorker(threading.Thread):
                 self.log("Stream %s: %s %dx%d" % (self.cfg.get("name", self.id), self.probed[0], self.probed[1],
                                                      self.probed[2]))
             else:
-                self.log("Stream %s: Codec/Größe nicht ermittelbar" % self.cfg.get("name", self.id))
+                if not getattr(self, "_probe_logged", False):
+                    self._probe_logged = True
+                    self.log("Stream %s: Codec/Größe nicht ermittelbar (ffprobe) - versuche trotzdem zu verbinden"
+                             % self.cfg.get("name", self.id))
         return self.probed
 
     def _choose_mode(self):
@@ -216,6 +226,13 @@ class StreamWorker(threading.Thread):
         if want == "ffmpeg" or not rtsp:
             return "ffmpeg"
         hw_ok = want in ("auto", "nvdec") and self.fail_hw < 2 and nvdec_available()
+        if not hw_ok and want in ("auto", "nvdec") and sysinfo.is_jetson() and not getattr(self, "_nv_logged", False):
+            self._nv_logged = True
+            why = ("gst-launch-1.0 fehlt" if not find_tool("gst-launch-1.0") else
+                   "python3-opencv fehlt" if not have_cv2() else
+                   "GStreamer-Element nvv4l2decoder/nvvidconv nicht gefunden" if self.fail_hw < 2 else
+                   "GStreamer lieferte zweimal keine Bilder")
+            self.log("Stream %s: kein Hardware-Dekoder (%s) - nutze ffmpeg" % (self.cfg.get("name", self.id), why))
         sw_ok = want == "gst" and self.fail_hw < 2 and find_tool("gst-launch-1.0") and have_cv2()
         if hw_ok or sw_ok:
             codec = (self._probe()[0] or "").lower()
@@ -341,6 +358,9 @@ class StreamWorker(threading.Thread):
                 os.close(r)
                 os.close(w)
                 self.status, self.error = "fehler", "Start: %s" % e
+                hint = " (zu wenig Arbeitsspeicher)" if "allocate memory" in str(e) or getattr(e, "errno", 0) == 12 else ""
+                self.log("Stream %s: Start fehlgeschlagen: %s%s" % (self.cfg.get("name", self.id), e, hint))
+                backoff = min(60, backoff * 2)
                 self.stop_ev.wait(backoff)
                 continue
             os.close(w)
