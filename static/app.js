@@ -273,7 +273,7 @@ function galQuery(before) {
   if ($('#gGroup').value) p.set('group', $('#gGroup').value);
   if ($('#gCat').value) p.set('category', $('#gCat').value);
   if ($('#gSight').checked) p.set('sightings', '1');
-  if ($('#gNamed').checked) p.set('named', '1');
+  if ($('#gNamed').value) p.set('named', $('#gNamed').value);
   if ($('#gDate').value) {
     const d = new Date($('#gDate').value + 'T00:00:00');
     p.set('from', d.getTime() / 1000); p.set('to', d.getTime() / 1000 + 86400);
@@ -284,7 +284,8 @@ function galQuery(before) {
 }
 function detCard(d, opts) {
   const o = opts || {};
-  const c = el('div', {class: 'card', onclick: e => { if (e.target.type === 'checkbox') return; (o.onclick || openDetection)(d.id); }},
+  const c = el('div', {class: 'card', 'data-id': d.id, onclick: e => { if (e.target.type === 'checkbox') return;
+    if (o.toggle) { o.toggle(d.id, c); return; } (o.onclick || openDetection)(d.id); }},
     el('div', {class: 'img', style: {backgroundImage: d.crop ? 'url(' + d.crop + ')' : 'none', borderTopColor: d.color}}),
     el('div', {class: 'badges'}, d.face ? el('span', {class: 'badge face', title: 'Gesicht erkannt'}, '☺') : null,
       d.manual ? el('span', {class: 'badge man', title: 'manuell zugeordnet'}, '✓') : null),
@@ -304,8 +305,10 @@ async function loadGallery(reset) {
     const r = await api(galQuery(reset ? null : S.gal.last));
     const g = $('#gal');
     if (reset && !r.items.length) g.append(el('div', {class: 'empty', style: {gridColumn: '1/-1'}}, el('b', null, 'Keine Bilder'), 'Sobald etwas erkannt wird, erscheint es hier.'));
-    r.items.forEach(d => g.append(detCard(d)));
+    r.items.forEach(d => g.append(detCard(d, S.gselMode ? {select: S.gsel, onsel: redrawGalSel,
+      toggle: id => { S.gsel.has(id) ? S.gsel.delete(id) : S.gsel.add(id); redrawGalSel(); }} : null)));
     S.gal.items = S.gal.items.concat(r.items);
+    if (S.gselMode) redrawGalSel();
     if (r.items.length) S.gal.last = r.items[r.items.length - 1].id;
     $('#gMore').hidden = S.gal.items.length >= r.total || !r.items.length;
     $('#gCount').textContent = r.total + ' Bilder';
@@ -313,6 +316,8 @@ async function loadGallery(reset) {
 }
 ['#gStream', '#gGroup', '#gCat', '#gSight', '#gNamed', '#gDate'].forEach(id => $(id).onchange = () => loadGallery(true));
 $('#gMore').onclick = () => loadGallery(false);
+$('#gSelBtn').onclick = () => toggleGalSel(!S.gselMode);
+$('#gPurge').onclick = openPurge;
 
 function shotWithBox(d) {
   const sh = el('div', {class: 'shot'});
@@ -339,6 +344,102 @@ async function objectOptions(sel, cls, current, includeNew) {
       o.label + (o.category ? ' · ' + o.category : '') + ' (' + o.sightings + '×)' + (o.id === current ? ' – aktuell' : '')))); sel.append(og); };
   add('Benannt', named); add('Unbenannt', un);
 }
+
+/* Zuweisen-Auswahl: benannte Personen/Objekte zuerst, "Neue Person anlegen" mit Namensfeld.
+   cls: Art der Bilder (fuer passende Vorschlaege); null = alle Arten (gemischte Auswahl). */
+function assignPicker(cls, current) {
+  const sel = el('select', {class: 'apick'});
+  const name = el('input', {type: 'text', placeholder: 'Name, z. B. „Paketbote“', style: {display: 'none'}});
+  const cat = catSelect('', () => {}); cat.style.display = 'none';
+  const wrap = el('div', {class: 'assign'}, sel, name, cat);
+  wrap.ready = (async () => {
+    let list = await api('/api/objects?sort=name&limit=1000' + (cls ? '&group=' + encodeURIComponent(groupOf(cls)) : ''));
+    if (cls) { const tk = c => ({truck: 'car', bus: 'car'}[c] || c); list = list.filter(o => tk(o.cls) === tk(cls)); }
+    sel.innerHTML = '';
+    sel.append(el('option', {value: ''}, '— zuweisen an … —'));
+    sel.append(el('option', {value: 'new'}, '➕ ' + (cls && cls !== 'person' ? 'Neues Objekt' : 'Neue Person') + ' anlegen …'));
+    const named = list.filter(o => o.name), un = list.filter(o => !o.name).sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0)).slice(0, 60);
+    const byCat = {};
+    named.forEach(o => { const k = o.category || 'Ohne Kategorie'; (byCat[k] = byCat[k] || []).push(o); });
+    Object.keys(byCat).sort((a, b) => a === 'Ohne Kategorie' ? 1 : b === 'Ohne Kategorie' ? -1 : a.localeCompare(b)).forEach(k => {
+      const og = el('optgroup', {label: k});
+      byCat[k].forEach(o => og.append(el('option', {value: o.id, disabled: o.id === current}, (cls ? '' : o.cls_de + ': ') + o.label + ' (' + o.sightings + '×)' + (o.id === current ? ' – aktuell' : ''))));
+      sel.append(og);
+    });
+    if (un.length) { const og = el('optgroup', {label: 'Unbenannt (zuletzt gesehen)'});
+      un.forEach(o => og.append(el('option', {value: o.id, disabled: o.id === current}, (cls ? '' : o.cls_de + ': ') + o.label + ' (' + o.sightings + '×)'))); sel.append(og); }
+  })();
+  sel.onchange = () => { const n = sel.value === 'new'; name.style.display = n ? '' : 'none'; cat.style.display = n ? '' : 'none'; if (n) name.focus(); };
+  wrap.value = () => ({target: sel.value, name: sel.value === 'new' ? name.value.trim() : '', category_id: sel.value === 'new' ? (cat.value || null) : null});
+  return wrap;
+}
+async function doAssign(ids, pick, wholeTrack) {
+  const v = pick.value();
+  if (!v.target) { toast('Bitte auswählen, wem die Bilder gehören'); return null; }
+  if (v.target === 'new' && !v.name) { toast('Bitte einen Namen eingeben'); return null; }
+  try {
+    const r = await api('/api/detections/assign', {body: {ids: ids, whole_track: !!wholeTrack, target: v.target === 'new' ? 'new' : +v.target, name: v.name, category_id: v.category_id}});
+    toast(r.moved + ' Bild(er) zugewiesen' + (r.skipped ? ' · ' + r.skipped + ' übersprungen (andere Art)' : '') + ' – Sentinel lernt daraus');
+    return r;
+  } catch (e) { toast(e.message); return null; }
+}
+
+/* Galerie: Auswahlmodus mit Sammelaktionen */
+S.gsel = new Set(); S.gselMode = false;
+function galSelBar() {
+  let bar = $('#gSelBar');
+  if (!S.gselMode) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    const pick = assignPicker(null, null);
+    bar = el('div', {class: 'selbar gsel', id: 'gSelBar'},
+      el('b', {id: 'gSelCnt'}), el('button', {class: 'btn-mini', onclick: () => { S.gal.items.forEach(d => S.gsel.add(d.id)); redrawGalSel(); }}, 'Alle sichtbaren'),
+      el('button', {class: 'btn-mini', onclick: () => { S.gsel.clear(); redrawGalSel(); }}, 'Keine'),
+      el('span', {class: 'sep'}), pick,
+      el('button', {class: 'btn', onclick: async () => { if (!S.gsel.size) return toast('Nichts ausgewählt');
+        const r = await doAssign([...S.gsel], pick); if (r) { S.gsel.clear(); loadGallery(true); } }}, 'Zuweisen'),
+      el('button', {class: 'btn btn-danger', title: 'Kein echtes Objekt (z. B. Schatten)', onclick: async () => { if (!S.gsel.size) return toast('Nichts ausgewählt');
+        if (!confirm(S.gsel.size + ' Bild(er) als Fehlerkennung lernen und löschen?')) return;
+        const r = await api('/api/detections/false', {body: {ids: [...S.gsel]}}); toast(r.learned + ' Fehlerkennung(en) gelernt'); S.gsel.clear(); loadGallery(true); }}, 'Fehlerkennung'),
+      el('button', {class: 'btn btn-danger', onclick: async () => { if (!S.gsel.size) return toast('Nichts ausgewählt');
+        if (!confirm(S.gsel.size + ' Bild(er) löschen?')) return;
+        const r = await api('/api/detections/delete', {body: {ids: [...S.gsel]}}); toast(r.deleted + ' gelöscht'); S.gsel.clear(); loadGallery(true); }}, 'Löschen'),
+      el('button', {class: 'btn-mini', onclick: () => toggleGalSel(false)}, 'Fertig'));
+    $('#tab-gallery').append(bar);
+  }
+  $('#gSelCnt').textContent = S.gsel.size + ' ausgewählt';
+}
+function redrawGalSel() {
+  $$('#gal .card').forEach(c => { const id = +c.dataset.id; c.classList.toggle('picked', S.gsel.has(id)); const cb = c.querySelector('input.sel'); if (cb) cb.checked = S.gsel.has(id); });
+  galSelBar();
+}
+function toggleGalSel(on) {
+  S.gselMode = on; S.gsel.clear();
+  $('#gSelBtn').classList.toggle('on', on); $('#gSelBtn').textContent = on ? 'Auswahl beenden' : 'Auswählen';
+  $('#gal').classList.toggle('selmode', on);
+  loadGallery(true); galSelBar();
+}
+
+/* Alles loeschen */
+function openPurge() {
+  const obj = el('input', {type: 'checkbox'}), fp = el('input', {type: 'checkbox'}), al = el('input', {type: 'checkbox'});
+  const word = el('input', {type: 'text', placeholder: 'LÖSCHEN eintippen'});
+  openModal(el('div', null, el('h2', null, 'Alle Erkennungen und Bilder löschen'),
+    el('p', null, 'Löscht ', el('b', null, 'alle gespeicherten Erkennungen und Bilder'), ' aus der Galerie. Unbenannte, automatisch angelegte Objekte verschwinden dabei.'),
+    el('div', {class: 'form', style: {gridTemplateColumns: '1fr'}},
+      el('label', {class: 'chk'}, obj, 'auch alle Personen/Objekte mit Namen, Kategorie und Gelerntem löschen (kompletter Neustart)'),
+      el('label', {class: 'chk'}, fp, 'auch gelernte Fehlerkennungen vergessen'),
+      el('label', {class: 'chk'}, al, 'auch den Alarmverlauf löschen')),
+    el('p', {class: 'muted small'}, 'Ohne den ersten Haken bleiben benannte Personen/Objekte samt Gelerntem erhalten und werden weiter wiedererkannt.'),
+    el('div', {class: 'actions'}, word,
+      el('button', {class: 'btn btn-danger', onclick: async () => {
+        if (word.value.trim().toUpperCase() !== 'LÖSCHEN') { toast('Zur Sicherheit „LÖSCHEN“ eintippen'); word.focus(); return; }
+        try { const r = await api('/api/purge', {body: {objects: obj.checked, falsepos: fp.checked, alarms: al.checked}});
+          toast(r.deleted + ' Erkennungen gelöscht'); closeModal(); refreshCurrent(); pollState(); }
+        catch (e) { toast(e.message); }
+      }}, 'Endgültig löschen'),
+      el('button', {class: 'btn btn-ghost', onclick: closeModal}, 'Abbrechen'))), true);
+}
+
 async function openDetection(id) {
   let d;
   try { d = await api('/api/detection/' + id); } catch (e) { return toast(e.message); }
@@ -347,28 +448,24 @@ async function openDetection(id) {
     el('span', null, 'Stream'), el('span', null, d.stream),
     el('span', null, 'Art'), el('span', null, el('span', {class: 'clsb'}, el('i', {style: {background: d.color}}), d.cls_de + ' (' + d.group + ')')),
     el('span', null, 'Sicherheit'), el('span', null, Math.round(d.score * 100) + ' %'),
-    el('span', null, 'Objekt'), el('span', null, d.object_id ? el('a', {href: '#', onclick: e => { e.preventDefault(); openObject(d.object_id); }}, d.object) : '–',
+    el('span', null, 'Gehört zu'), el('span', null, d.object_id ? el('a', {href: '#', onclick: e => { e.preventDefault(); openObject(d.object_id); }}, d.object) : '–',
       d.category ? el('span', {class: 'muted'}, ' · ' + d.category) : null),
-    el('span', null, 'Zuordnung'), el('span', null, d.manual ? 'manuell korrigiert' : (d.match === 'neu' ? 'neues Objekt' :
+    el('span', null, 'Zuordnung'), el('span', null, d.manual ? 'von Hand' : (d.match === 'neu' ? 'neu angelegt' :
       (d.match || '–') + (d.sim ? ' (' + Math.round(d.sim * 100) + ' %)' : ''))),
     el('span', null, 'Gesicht'), el('span', null, d.face ? 'ja' : 'nein'));
-  const sel = el('select'); const nm = el('input', {type: 'text', placeholder: 'Name für das neue Objekt (optional)'});
+  const pick = assignPicker(d.cls, d.object_id);
   const whole = el('input', {type: 'checkbox', checked: d.track_count > 1});
-  const fix = el('div', {class: 'fixbox', hidden: true},
-    el('b', null, 'Falsch zugeordnet? Richtiges Objekt wählen'),
-    el('span', {class: 'muted small'}, 'Das System merkt sich die Korrektur: Die Merkmale zählen künftig für das gewählte Objekt und als Gegenbeispiel für das bisherige.'),
-    sel, nm, d.track_count > 1 ? el('label', {class: 'chk'}, whole, 'alle ' + d.track_count + ' Bilder dieser Sichtung verschieben') : null,
+  const assignBox = el('div', {class: 'fixbox'},
+    el('b', null, d.named ? 'Jemand anderes? Richtig zuweisen' : 'Wer ist das? Zuweisen'),
+    pick,
+    d.track_count > 1 ? el('label', {class: 'chk'}, whole, 'alle ' + d.track_count + ' Bilder dieser Sichtung') : null,
     el('div', {class: 'actions', style: {marginTop: 0}}, el('button', {class: 'btn', onclick: async () => {
-      try {
-        const r = await api('/api/detection/' + d.id + '/move', {body: {target: sel.value, whole_track: whole.checked, name: nm.value}});
-        toast(r.moved + ' Bild(er) neu zugeordnet'); closeModal(); refreshCurrent();
-      } catch (e) { toast(e.message); }
-    }}, 'Zuordnung speichern')));
-  sel.onchange = () => nm.style.display = sel.value === 'new' ? '' : 'none';
+      const r = await doAssign([d.id], pick, whole.checked && d.track_count > 1); if (r) { closeModal(); refreshCurrent(); }
+    }}, 'Zuweisen')),
+    el('span', {class: 'muted small'}, 'Sentinel lernt daraus: Merkmale zählen künftig für die gewählte Person und als Gegenbeispiel für die bisherige.'));
   openModal(el('div', null, el('h2', null, d.cls_de + ' · ', el('span', {class: 'acc'}, d.object || '')),
-    el('div', {class: 'detail'}, shotWithBox(d), el('div', null, info,
+    el('div', {class: 'detail'}, shotWithBox(d), el('div', null, info, assignBox,
       el('div', {class: 'actions'},
-        el('button', {class: 'btn', onclick: async () => { fix.hidden = !fix.hidden; if (!fix.hidden) { await objectOptions(sel, d.cls, d.object_id, true); sel.onchange(); } }}, 'Zuordnung korrigieren'),
         d.object_id ? el('button', {class: 'btn btn-ghost', onclick: () => openObject(d.object_id)}, 'Objekt öffnen') : null,
         el('button', {class: 'btn btn-danger', title: 'Kein echtes Objekt (z. B. Schatten) – Sentinel lernt daraus', onclick: async () => {
           const all = d.track_count > 1 && confirm('Alle ' + d.track_count + ' Bilder dieser Sichtung als Fehlerkennung lernen?\n(Abbrechen = nur dieses Bild)');
@@ -379,7 +476,7 @@ async function openDetection(id) {
         el('button', {class: 'btn btn-danger', onclick: async () => {
           if (!confirm('Dieses Bild löschen?')) return;
           await api('/api/detection/' + d.id, {method: 'DELETE'}); toast('Gelöscht'); closeModal(); refreshCurrent();
-        }}, 'Löschen')), fix))));
+        }}, 'Löschen'))))));
 }
 function refreshCurrent() {
   if (S.tab === 'gallery') loadGallery(true);
@@ -486,6 +583,7 @@ async function openObject(id) {
           el('button', {class: 'btn', onclick: async () => {
             await saveObj(o.id, {name: name.value, notes: notes.value, category_id: cat.value || null}); loadObjects(); openObject(o.id);
           }}, 'Speichern'),
+          el('button', {class: 'btn btn-teal', onclick: () => openAssignTo(o)}, '+ Erkennungen zuweisen'),
           el('button', {class: 'btn btn-danger', title: 'Alle Bilder dieses Objekts sind Fehltreffer (z. B. Schatten)', onclick: async () => {
             if (!confirm('„' + o.label + '“ ist kein echtes Objekt?\nAlle ' + o.detections + ' Bilder werden als Fehlerkennung gelernt und das Objekt gelöscht.')) return;
             try { const r = await api('/api/objects/' + o.id + '/false', {body: {}}); toast(r.learned + ' Fehlerkennung(en) gelernt'); closeModal(); loadObjects(); }
@@ -506,7 +604,79 @@ async function openObject(id) {
       el('span', null, 'Streams'), el('span', null, o.streams.join(', ') || '–'),
       el('span', null, 'Gelernt'), el('span', null, (smp.face || 0) + ' Gesichter, ' + (smp.app || 0) + ' Aussehen-Beispiele' +
         ((smp.face_neg || smp.app_neg) ? ', ' + ((smp.face_neg || 0) + (smp.app_neg || 0)) + ' Gegenbeispiele aus Korrekturen' : ''))),
-    el('h4', null, 'Bilder – zum Korrigieren auswählen'), grid, bar));
+    el('h4', null, 'Bilder – zum Korrigieren auswählen'),
+    o.items.length ? grid : el('div', {class: 'empty'}, el('b', null, 'Noch keine Bilder'), 'Mit „+ Erkennungen zuweisen“ Bilder aus der Galerie hinzufügen.'), bar));
+}
+
+/* Person/Objekt von Hand anlegen */
+async function openNewObject() {
+  const name = el('input', {type: 'text', placeholder: 'z. B. Paketbote, Nachbar Jonas, Familienauto'});
+  const cls = el('select');
+  const common = ['person', 'car', 'truck', 'motorcycle', 'bicycle', 'dog', 'cat', 'bird', 'horse'];
+  const og1 = el('optgroup', {label: 'Häufig'}), og2 = el('optgroup', {label: 'Alle Arten'});
+  common.forEach(c => { const m = S.meta.classes.find(x => x.id === c); if (m) og1.append(el('option', {value: c}, m.de)); });
+  S.meta.classes.filter(c => !common.includes(c.id)).forEach(c => og2.append(el('option', {value: c.id}, c.de)));
+  cls.append(og1, og2); cls.value = 'person';
+  const cat = catSelect('', () => {});
+  const notes = el('textarea', {placeholder: 'Notizen (optional)'});
+  openModal(el('div', null, el('h2', null, 'Neue Person / neues Objekt'),
+    el('div', {class: 'form'}, el('label', null, 'Name'), name, el('label', null, 'Art'), cls, el('label', null, 'Kategorie'), cat,
+      el('label', null, 'Notizen'), notes),
+    el('p', {class: 'muted small'}, 'Danach direkt Bilder aus der Galerie zuweisen. Je mehr Bilder (am besten mit Gesicht), desto sicherer erkennt Sentinel die Person wieder.'),
+    el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: async () => {
+      if (!name.value.trim()) { toast('Bitte einen Namen eingeben'); name.focus(); return; }
+      try {
+        const r = await api('/api/objects', {body: {name: name.value.trim(), cls: cls.value, category_id: cat.value || null, notes: notes.value}});
+        toast('„' + name.value.trim() + '“ angelegt'); loadObjects();
+        const o = await api('/api/object/' + r.id); openAssignTo(o);
+      } catch (e) { toast(e.message); }
+    }}, 'Anlegen und Erkennungen zuweisen'), el('button', {class: 'btn btn-ghost', onclick: closeModal}, 'Abbrechen'))), true);
+  setTimeout(() => name.focus(), 50);
+}
+$('#oNew').onclick = openNewObject;
+
+/* Erkennungen einer Person/einem Objekt zuweisen (Auswahl aus der Galerie) */
+async function openAssignTo(o) {
+  const sel = new Set();
+  const grid = el('div', {class: 'gal'});
+  const only = el('select', null, el('option', {value: '0'}, 'nur noch nicht zugewiesene'), el('option', {value: ''}, 'alle (auch anderen zugewiesene)'));
+  const sight = el('input', {type: 'checkbox', checked: true});
+  const stream = el('select'); stream.append(el('option', {value: ''}, 'Alle Streams'));
+  (S.cfg ? S.cfg.streams : []).forEach(s => stream.append(el('option', {value: s.id}, s.name)));
+  const cnt = el('b'), more = el('button', {class: 'btn btn-ghost', hidden: true}, 'Weitere laden');
+  const go = el('button', {class: 'btn'}, 'Zuweisen');
+  let last = null;
+  const upd = () => { cnt.textContent = sel.size + ' ausgewählt'; go.disabled = !sel.size; go.textContent = sel.size ? sel.size + ' Bild(er) „' + o.label + '“ zuweisen' : 'Bilder anklicken'; };
+  const toggle = (id, c) => { sel.has(id) ? sel.delete(id) : sel.add(id); c.classList.toggle('picked', sel.has(id)); const cb = c.querySelector('input.sel'); if (cb) cb.checked = sel.has(id); upd(); };
+  const load = async reset => {
+    if (reset) { grid.innerHTML = ''; last = null; }
+    const p = new URLSearchParams({like_object: o.id, exclude_object: o.id, limit: 120});
+    if (only.value) p.set('named', only.value);
+    if (sight.checked) p.set('sightings', '1');
+    if (stream.value) p.set('stream', stream.value);
+    if (last) p.set('before', last);
+    const r = await api('/api/detections?' + p.toString());
+    if (reset && !r.items.length) grid.append(el('div', {class: 'empty', style: {gridColumn: '1/-1'}}, el('b', null, 'Keine passenden Bilder'), 'Filter ändern oder warten, bis etwas erkannt wird.'));
+    r.items.forEach(d => { const c = detCard(d, {select: sel, onsel: upd, toggle: toggle}); if (sel.has(d.id)) c.classList.add('picked'); grid.append(c); });
+    if (r.items.length) last = r.items[r.items.length - 1].id;
+    more.hidden = r.items.length < 120;
+  };
+  only.onchange = sight.onchange = stream.onchange = () => load(true);
+  more.onclick = () => load(false);
+  const whole = el('input', {type: 'checkbox', checked: true});
+  go.onclick = async () => {
+    if (!sel.size) return;
+    try {
+      const r = await api('/api/detections/assign', {body: {ids: [...sel], target: o.id, whole_track: whole.checked}});
+      toast(r.moved + ' Bild(er) zugewiesen' + (r.skipped ? ' · ' + r.skipped + ' übersprungen' : '')); loadObjects(); openObject(o.id);
+    } catch (e) { toast(e.message); }
+  };
+  openModal(el('div', null, el('h2', null, 'Erkennungen zuweisen · ', el('span', {class: 'acc'}, o.label)),
+    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Bilder anklicken, die zu „' + o.label + '“ gehören. Angezeigt werden nur passende Arten (' + o.cls_de + ').'),
+    el('div', {class: 'bar'}, only, stream, el('label', {class: 'chk'}, sight, 'nur erste Bilder je Sichtung'), el('label', {class: 'chk'}, whole, 'ganze Sichtung mitnehmen')),
+    grid, el('div', {class: 'more'}, more),
+    el('div', {class: 'selbar'}, cnt, el('div', {class: 'grow'}), go, el('button', {class: 'btn-mini', onclick: () => openObject(o.id)}, 'Zurück zum Objekt'))));
+  upd(); load(true);
 }
 
 /* Kategorien */
@@ -705,15 +875,18 @@ async function loadSettings() {
   const D = C.detection;
   const GT = Object.assign({}, D.group_thresholds || {});
   const gl = el('div', {class: 'grp-list'});
-  const gch = {}, gthr = {};
-  gl.append(el('div', {class: 'g head'}, el('span'), el('span'), el('span', null, 'Gruppe'), el('span', null, 'Mindest-Sicherheit')));
+  const gch = {}, gthr = {}, gmov = {};
+  const RM = D.require_motion || ['person', 'animal', 'bike'];
+  gl.append(el('div', {class: 'g head'}, el('span'), el('span'), el('span', null, 'Gruppe'), el('span', null, 'Mindest-Sicherheit'),
+    el('span', {title: 'Neue Objekte nur melden, wenn sich an der Stelle etwas bewegt (gegen Schatten, Plakate, Statuen)'}, 'nur mit Bewegung')));
   S.meta.groups.forEach(g => {
     gch[g.id] = el('input', {type: 'checkbox', checked: D.groups.includes(g.id)});
     gthr[g.id] = numIn(Math.round((GT[g.id] != null ? GT[g.id] : D.threshold) * 100), {min: 20, max: 95, step: 5, class: 'thr'});
+    gmov[g.id] = el('input', {type: 'checkbox', checked: RM.includes(g.id), title: 'nur mit Bewegung'});
     gl.append(el('div', {class: 'g'}, gch[g.id], el('i', {style: {borderColor: g.color}}),
       el('label', {class: 'gname', title: g.classes.map(c => S.meta.classes.find(x => x.id === c).de).join(', ')}, g.name,
         el('span', {class: 'muted small'}, g.classes.slice(0, 4).map(c => S.meta.classes.find(x => x.id === c).de).join(', ') + (g.classes.length > 4 ? ' …' : ''))),
-      el('span', {class: 'thrbox'}, gthr[g.id], ' %')));
+      el('span', {class: 'thrbox'}, gthr[g.id], ' %'), el('span', {class: 'movbox'}, gmov[g.id])));
     gl.lastChild.querySelector('.gname').onclick = () => { gch[g.id].checked = !gch[g.id].checked; };
   });
   const extra = new Set(D.extra_classes || []);
@@ -761,7 +934,7 @@ async function loadSettings() {
       const gt = {}; Object.keys(gthr).forEach(k => { gt[k] = +gthr[k].value / 100; });
       saveSection('detection', {
         enabled: en.checked, groups: Object.keys(gch).filter(k => gch[k].checked), extra_classes: [...extra], threshold: +thr.value / 100,
-        group_thresholds: gt, model: mdl.value, model_size: +ms.value, accel: ac.value, min_hits: +mh.value, verify: vf.checked,
+        group_thresholds: gt, require_motion: Object.keys(gmov).filter(k => gmov[k].checked), model: mdl.value, model_size: +ms.value, accel: ac.value, min_hits: +mh.value, verify: vf.checked,
         person_min_aspect: +pa.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
         track_timeout_s: +tt.value, sighting_gap_s: +sg.value, resnap_s: +rs.value, min_box_px: +mb.value});
     }}, 'Speichern'))));
@@ -818,7 +991,8 @@ async function loadSettings() {
       el('label', null, 'Objektliste ab'), el('div', null, rl, ' Sichtungen („mehrfach erkannt“)')),
     el('div', {class: 'actions'},
       el('button', {class: 'btn', onclick: async () => { await saveSection('storage', {max_days: +md.value, max_mb: +mm.value}, ' '); await saveSection('ui', {sound: snd.checked, repeat_list_min: +rl.value}); }}, 'Speichern'),
-      el('button', {class: 'btn btn-ghost', onclick: async () => { await api('/api/cleanup', {body: {}}); toast('Aufräumen gestartet'); }}, 'Jetzt aufräumen'))));
+      el('button', {class: 'btn btn-ghost', onclick: async () => { await api('/api/cleanup', {body: {}}); toast('Aufräumen gestartet'); }}, 'Jetzt aufräumen'),
+      el('button', {class: 'btn btn-danger', onclick: openPurge}, 'Alle Erkennungen und Bilder löschen'))));
   /* System */
   const port = numIn(S.state.port, {min: 1, max: 65535});
   const mt = el('table', {class: 'mtab', id: 'mtab'});
@@ -979,7 +1153,7 @@ async function updateSettingsStatus() {
   renderUpdate();
   const fs = $('#filterStats'), st0 = S.state;
   if (fs && st0 && st0.filter_stats) fs.textContent = 'seit Start: ' + st0.filter_stats.rejected_verify + '× Zweitprüfung, ' +
-    st0.filter_stats.rejected_shape + '× Form, ' + st0.filter_stats.rejected_fp + '× gelernte Fehlerkennung';
+    st0.filter_stats.rejected_shape + '× Form, ' + (st0.filter_stats.rejected_static || 0) + '× ohne Bewegung, ' + st0.filter_stats.rejected_fp + '× gelernte Fehlerkennung';
   renderFan();
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');

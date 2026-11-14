@@ -46,9 +46,11 @@
       <select id="gCat"><option value="">Alle Kategorien</option></select>
       <input type="date" id="gDate" title="Tag">
       <label class="chk"><input type="checkbox" id="gSight" checked> nur erste Bilder je Sichtung</label>
-      <label class="chk"><input type="checkbox" id="gNamed"> nur benannte</label>
+      <select id="gNamed"><option value="">zugewiesen + offen</option><option value="0">nur noch nicht zugewiesene</option><option value="1">nur benannte</option></select>
       <div class="grow"></div>
       <span class="muted mono small" id="gCount"></span>
+      <button class="btn" id="gSelBtn">Auswählen</button>
+      <button class="btn btn-danger" id="gPurge" title="Alle Erkennungen und Bilder löschen">Alles löschen</button>
     </div>
     <div class="gal" id="gal"></div>
     <div class="more"><button class="btn btn-ghost" id="gMore" hidden>Weitere laden</button></div>
@@ -65,6 +67,7 @@
       </select>
       <label class="chk"><input type="checkbox" id="oMin" checked> nur mehrfach erkannte</label>
       <div class="grow"></div>
+      <button class="btn" id="oNew">+ Person anlegen</button>
       <button class="btn btn-ghost" id="oCats">Kategorien verwalten</button>
     </div>
     <div class="olist" id="olist"></div>

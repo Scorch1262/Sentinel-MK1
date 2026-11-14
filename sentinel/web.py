@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .detector import CLASS_GROUP, COCO, DE, GROUPS
+from .engine import track_key
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 
@@ -174,6 +175,18 @@ class Api:
             args.append(int(p("category")))
         if p("named") == "1":
             where.append("d.object_id IN (SELECT id FROM objects WHERE name<>'')")
+        if p("named") == "0":
+            where.append("(d.object_id IS NULL OR d.object_id IN (SELECT id FROM objects WHERE name=''))")
+        if p("exclude_object"):
+            where.append("(d.object_id IS NULL OR d.object_id<>?)")
+            args.append(int(p("exclude_object")))
+        if p("like_object"):
+            # nur Erkennungen, die zur Art dieses Objekts passen (Person -> Personen, Auto -> Auto/LKW/Bus)
+            o = e.store.q("SELECT cls FROM objects WHERE id=?", (int(p("like_object")),), one=True)
+            if o:
+                same = [c for c in COCO if track_key(c) == track_key(o["cls"])]
+                where.append("d.cls IN (%s)" % ",".join("?" * len(same)))
+                args += same
         if p("sightings") == "1":
             where.append("d.sighting=1")
         if p("from"):
@@ -296,6 +309,47 @@ class Api:
             if sets:
                 e.store.x("UPDATE objects SET %s WHERE id=?" % ", ".join(sets), args + [oid])
             return dict(ok=True)
+        if path == "/api/objects":
+            cid = body.get("category_id")
+            oid = e.create_object(body.get("cls") or "person", body.get("name") or "",
+                                  int(cid) if cid not in (None, "", "none") else None, body.get("notes") or "")
+            return dict(ok=True, id=oid)
+        if path == "/api/detections/assign":
+            ids = [int(i) for i in body.get("ids", [])]
+            if not ids:
+                raise ValueError("keine Bilder ausgewählt")
+            if body.get("whole_track"):
+                tracks = [r["track"] for r in e.store.q("SELECT DISTINCT track FROM detections WHERE id IN (%s)"
+                                                         % ",".join(map(str, ids))) if r["track"]]
+                for t in tracks:
+                    ids += [r["id"] for r in e.store.q("SELECT id FROM detections WHERE track=?", (t,))]
+                ids = sorted(set(ids))
+            target = body.get("target")
+            if target in (None, "", "new") and body.get("name"):
+                # neue Person/neues Objekt mit Namen anlegen, Art vom ersten Bild
+                r = e.store.q("SELECT cls FROM detections WHERE id=?", (ids[0],), one=True)
+                target = e.create_object(r["cls"] if r else "person", body["name"],
+                                         int(body["category_id"]) if body.get("category_id") else None)
+            tgt = e.move_detections(ids, target)
+            return dict(ok=True, object_id=tgt, moved=len(ids) - e.last_move_skipped, skipped=e.last_move_skipped)
+        if path == "/api/detections/false":
+            return dict(ok=True, learned=e.mark_false([int(i) for i in body.get("ids", [])]))
+        if path == "/api/detections/delete":
+            ids = [int(i) for i in body.get("ids", [])]
+            objs = {r["object_id"] for r in e.store.q("SELECT object_id FROM detections WHERE id IN (%s)"
+                                                       % ",".join(map(str, ids)))} if ids else set()
+            for i in ids:
+                e.delete_detection(i, recount=False)
+            for oid in objs:
+                if oid:
+                    e.recount(oid)
+                    e.index.reload_obj(oid)
+                    e._cleanup_object(oid)
+            return dict(ok=True, deleted=len(ids))
+        if path == "/api/purge":
+            n = e.purge(objects=bool(body.get("objects")), falsepos=bool(body.get("falsepos")),
+                        alarms=bool(body.get("alarms")))
+            return dict(ok=True, deleted=n)
         m = re.match(r"^/api/detection/(\d+)/false$", path)
         if m:
             did = int(m.group(1))

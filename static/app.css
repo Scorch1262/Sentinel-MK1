@@ -198,7 +198,8 @@ label.chk{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:va
 .stream-ed .r > input[type=text]{flex:1;min-width:160px}
 .stream-ed .num{width:80px}
 .grp-list{display:flex;flex-direction:column;gap:6px}
-.grp-list .g{display:grid;grid-template-columns:16px 18px minmax(0,1fr) auto;align-items:center;gap:10px}
+.grp-list .g{display:grid;grid-template-columns:16px 18px minmax(0,1fr) auto 84px;align-items:center;gap:10px}
+.grp-list .movbox{display:flex;justify-content:center}
 .grp-list .g.head{font:10.5px var(--mono);color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px}
 .grp-list .g i{width:18px;height:12px;border:2px solid;border-radius:2px;display:block}
 .grp-list .gname{cursor:pointer;display:flex;flex-direction:column;min-width:0}
@@ -228,3 +229,17 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .fan-ico{display:inline-block;color:var(--accent-2);line-height:1}
 .fan-ico.spin{animation:fanspin 1s linear infinite}
 @keyframes fanspin{to{transform:rotate(360deg)}}
+
+/* Auswahl & Zuweisen */
+.gal.selmode .card{cursor:pointer}
+.card.picked{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset}
+.card.picked .img{opacity:.85}
+.selbar.gsel{position:fixed;left:50%;transform:translateX(-50%);bottom:max(14px, env(safe-area-inset-bottom));z-index:30;
+  width:min(1100px, calc(100% - 24px));box-shadow:0 8px 30px #000a}
+.selbar .sep{width:1px;height:24px;background:var(--border-2)}
+.selbar .grow{flex:1}
+.assign{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.assign select{min-width:240px;flex:1}
+.assign input{flex:1;min-width:180px}
+.fixbox .assign select,.fixbox .assign input{width:auto}
+#tab-gallery{padding-bottom:90px}

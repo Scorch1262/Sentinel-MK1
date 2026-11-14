@@ -40,7 +40,7 @@ def fmt_dur(minutes):
 class Track:
     __slots__ = ("tid", "cls", "key", "box", "score", "hits", "first_ts", "last_ts", "confirmed", "obj",
                  "last_save", "face_tries", "face_last", "has_face", "dets", "match", "named", "rejected",
-                 "retry_at", "scores", "why")
+                 "retry_at", "scores", "why", "moved", "c0")
 
     def __init__(self, tid, cls, box, score, ts):
         self.tid, self.cls, self.key = tid, cls, track_key(cls)
@@ -59,6 +59,8 @@ class Track:
         self.retry_at = 0.0
         self.scores = [score]
         self.why = ""
+        self.moved = False         # hat sich im Bereich des Objekts etwas bewegt?
+        self.c0 = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
 
 
 class IdentityIndex:
@@ -194,7 +196,9 @@ class Engine:
         self.index = IdentityIndex(self.store)
         self.models = ModelManager(os.path.join(self.data_dir, "models"), self.log, wanted=self.wanted_models)
         self.fp_cache = None        # gelernte Fehlerkennungen (Liste), None = neu laden
-        self.stats = dict(rejected_fp=0, rejected_verify=0, rejected_shape=0)
+        self.stats = dict(rejected_fp=0, rejected_verify=0, rejected_shape=0, rejected_static=0)
+        self.bg = {}                # stream_id -> Hintergrund (Graustufen, klein, float32)
+        self.motion = {}            # stream_id -> Bewegungsmaske des zuletzt analysierten Bildes
         self.mqtt = MqttSender()
         self.workers = {}
         self.tracks = {}            # stream_id -> [Track]
@@ -217,6 +221,7 @@ class Engine:
         self.lock = threading.RLock()
         self.started = time.time()
         self.updater = None          # wird von app.py gesetzt
+        self.last_move_skipped = 0
         self.fan = None              # Luefterregelung (nur Jetson)
 
     # ------------------------------------------------------------------
@@ -415,6 +420,7 @@ class Engine:
         now = time.time()
         H, W = frame.shape[:2]
         tracks = self.tracks.setdefault(w.id, [])
+        self._update_background(w.id, frame, d)
         # Bewegungsfilter: ruhige Szene -> keine Analyse (vorhandene Objekte bleiben bestehen)
         gray = imaging.gray_small(frame)
         if d.get("motion_gate", True):
@@ -531,6 +537,47 @@ class Engine:
                 return True
         return False
 
+    # ------------------------------------------------------------------
+    # Bewegungspflicht: neue Personen/Tiere nur, wenn sich dort etwas bewegt
+    # ------------------------------------------------------------------
+    BG_W = 160
+
+    def _update_background(self, sid, frame, d):
+        H, W = frame.shape[:2]
+        h = max(9, int(round(self.BG_W * H / float(W))))
+        g = imaging.gray_small(frame, self.BG_W, h)
+        bg = self.bg.get(sid)
+        if bg is None or bg.shape != g.shape:
+            self.bg[sid] = g.copy()
+            self.motion[sid] = np.zeros(g.shape, bool)
+            return
+        diff = np.abs(g - bg)
+        # Helligkeitsaenderung des ganzen Bildes (Wolke, IR-Umschaltung) herausrechnen
+        diff = np.abs(diff - np.median(diff))
+        self.motion[sid] = diff > float(d.get("motion_pixel_level", 18))
+        # langsam anpassen; bewegte Stellen noch langsamer (stehenbleibende Person verschwindet nicht sofort)
+        a = np.where(self.motion[sid], 0.01, 0.05).astype(np.float32)
+        self.bg[sid] = bg * (1 - a) + g * a
+
+    def _check_moved(self, sid, t, frame):
+        """Bewegung im Bereich der Spur oder deutliche Ortsveraenderung der Spur."""
+        if t.moved:
+            return True
+        m = self.motion.get(sid)
+        H, W = frame.shape[:2]
+        x1, y1, x2, y2 = t.box
+        if m is not None:
+            mh, mw = m.shape
+            a, b = int(x1 * mw / W), int(y1 * mh / H)
+            c, e = max(a + 1, int(np.ceil(x2 * mw / W))), max(b + 1, int(np.ceil(y2 * mh / H)))
+            sub = m[b:e, a:c]
+            if sub.size and float(sub.mean()) >= 0.06:
+                t.moved = True
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        if ((cx - t.c0[0]) ** 2 + (cy - t.c0[1]) ** 2) ** 0.5 > 0.25 * max(1.0, y2 - y1):
+            t.moved = True
+        return t.moved
+
     def _accept(self, w, t, frame, now, d):
         """Darf eine Spur zur Sichtung werden? (Fehlerkennungs-Filter, Zweitpruefung)"""
         if self._is_known_false(w.id, t, frame):
@@ -540,6 +587,12 @@ class Engine:
         mean = sum(t.scores[-5:]) / float(len(t.scores[-5:]))
         g = CLASS_GROUP.get(t.cls, {"id": "other"})["id"]
         if mean < self._thresholds(d).get(g, 0.5):
+            return False
+        if g in (d.get("require_motion") or []) and not self._check_moved(w.id, t, frame):
+            # steht still seit dem ersten Auftauchen (Schatten, Statue, Plakat ...): noch nicht melden
+            if not t.why:
+                t.why = "ohne Bewegung"
+                self.stats["rejected_static"] += 1
             return False
         if d.get("verify", True) and self.det is not None:
             if not self._verify(frame, t, d):
@@ -595,6 +648,8 @@ class Engine:
                 continue
             if t.confirmed and t.obj:
                 self.seen[(w.id, t.obj)] = now
+            elif not t.confirmed:
+                self._check_moved(w.id, t, frame)
             try:
                 if not t.confirmed and t.hits >= min_hits:
                     if t.rejected:
@@ -725,7 +780,8 @@ class Engine:
         folder = os.path.join(self.snap_dir, day)
         os.makedirs(folder, exist_ok=True)
         stamp = time.strftime("%H%M%S", time.localtime(now)) + "_%03d" % int((now % 1) * 1000)
-        base = "%s_%s_%s" % (stamp, w.id, t.cls.replace(" ", "-"))
+        # Spur-Nummer im Namen: mehrere Objekte im selben Bild duerfen sich nicht ueberschreiben
+        base = "%s_%s_%s_%s" % (stamp, w.id, t.cls.replace(" ", "-"), t.tid.rsplit("-", 1)[-1])
         img_rel = crop_rel = None
         jpg = w.jpeg_for(idx)
         if jpg:
@@ -853,9 +909,13 @@ class Engine:
             raise ValueError("Zielobjekt existiert nicht")
         ms = int(self.cfg.get("identity").get("max_samples", 40))
         olds = set()
+        self.last_move_skipped = 0
         for r in rows:
             old = r["object_id"]
             if old == target:
+                continue
+            if track_key(r["cls"]) != track_key(tgt["cls"]):
+                self.last_move_skipped += 1      # z. B. Auto-Bild in eine Person: nicht zulassen
                 continue
             olds.add(old)
             app, face = blob_vec(r["app"]), blob_vec(r["fvec"])
@@ -882,6 +942,52 @@ class Engine:
         if self.store.q("SELECT avatar_det FROM objects WHERE id=?", (target,), one=True)["avatar_det"] is None:
             self._set_avatar(target, rows[0]["id"])
         return target
+
+    def purge(self, objects=False, falsepos=False, alarms=False):
+        """Alle Erkennungen und Bilder loeschen. objects: auch Personen/Objekte (Namen, Lernbeispiele);
+        sonst bleiben benannte bzw. einsortierte Objekte mit ihrem Gelernten erhalten."""
+        n = self.store.q("SELECT COUNT(*) n FROM detections", one=True)["n"]
+        for tl in self.tracks.values():
+            del tl[:]
+        self.live = {}
+        shutil.rmtree(self.snap_dir, ignore_errors=True)
+        os.makedirs(self.snap_dir, exist_ok=True)
+        self.store.xmany([("DELETE FROM detections", ()),
+                          ("DELETE FROM samples WHERE det_id IS NOT NULL AND pinned=0 AND neg=0 AND object_id IN "
+                           "(SELECT id FROM objects WHERE name='' AND category_id IS NULL)", ())])
+        if objects:
+            self.store.xmany([("DELETE FROM samples", ()), ("DELETE FROM objects", ())])
+            shutil.rmtree(self.avatar_dir, ignore_errors=True)
+            os.makedirs(self.avatar_dir, exist_ok=True)
+            self.store.x("DELETE FROM meta WHERE k LIKE 'seq_%'")
+        else:
+            for o in self.store.q("SELECT id FROM objects WHERE name='' AND category_id IS NULL"):
+                self.delete_object(o["id"], delete_detections=False)
+            self.store.x("UPDATE objects SET sightings=0, detections=0, avatar_det=NULL")
+        if falsepos:
+            self.store.x("DELETE FROM false_pos")
+            shutil.rmtree(os.path.join(self.data_dir, "falsepos"), ignore_errors=True)
+            self.fp_cache = None
+        if alarms:
+            self.store.x("DELETE FROM alarm_events")
+        self.seen = {}
+        self.cooldown = {}
+        self.index.load()
+        try:
+            self.store.x("VACUUM")
+        except Exception:
+            pass
+        self.log("Alle Erkennungen und Bilder gelöscht (%d Einträge)%s" % (n, ", inkl. Objekte" if objects else ""))
+        return n
+
+    def create_object(self, cls, name="", category_id=None, notes=""):
+        """Objekt/Person von Hand anlegen (danach Erkennungen zuweisen)."""
+        if cls not in COCO:
+            raise ValueError("Art unbekannt")
+        oid = self._create_object(cls, time.time())
+        self.store.x("UPDATE objects SET name=?, category_id=?, notes=?, first_seen=NULL, last_seen=NULL WHERE id=?",
+                     ((name or "").strip()[:80], category_id, (notes or "")[:500], oid))
+        return oid
 
     def mark_false(self, det_ids):
         """Bilder als Fehlerkennung lernen: Ort + Aussehen merken (je Stream), Bilder loeschen.

@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.0.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.1.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -172,14 +172,35 @@ Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen
 2. **Formprüfung** – eine Person muss mindestens 0,9× so hoch wie breit sein. Flache Treffer wie
    Schatten zählen nur bei sehr hoher Sicherheit.
 3. **3 Treffer in Folge** und ein ausreichender Mittelwert, bevor etwas als Sichtung gilt.
-4. **Zweitprüfung** – der Bereich um ein neues Objekt wird vergrößert ein zweites Mal analysiert;
+4. **Bewegungspflicht** – neue Personen, Tiere und Fahrräder zählen erst, wenn sich an der Stelle
+   etwas bewegt (Vergleich mit einem Hintergrundbild je Kamera). Stehende Schatten parkender Autos,
+   Plakate oder Statuen werden so nie gemeldet. Je Gruppe abschaltbar.
+5. **Zweitprüfung** – der Bereich um ein neues Objekt wird vergrößert ein zweites Mal analysiert;
    Schatten, Spiegelungen und Muster bestehen das meist nicht.
-5. **Gelernte Fehlerkennungen** – in der Galerie bei einem falschen Treffer **„Fehlerkennung“**
+6. **Gelernte Fehlerkennungen** – in der Galerie bei einem falschen Treffer **„Fehlerkennung“**
    (oder beim Objekt „Ist Fehlerkennung“) wählen. Sentinel merkt sich Ort und Aussehen je Stream
    und meldet dort so etwas nicht mehr. Liste und Löschen unter Einstellungen.
 
 Im Live-Bild erscheinen nur noch bestätigte Objekte. Unter Einstellungen → Objekterkennung zeigt
 „Verworfen“, wie oft jede Stufe seit dem Start eingegriffen hat.
+
+## Personen anlegen und Erkennungen zuweisen
+
+- **Person anlegen:** Objekte → **„+ Person anlegen“** (Name, Art, Kategorie). Danach öffnet sich
+  direkt die Bildauswahl: passende Bilder anklicken → **„… zuweisen“**.
+- **Beim Objekt:** **„+ Erkennungen zuweisen“** zeigt alle noch nicht zugewiesenen Bilder der
+  passenden Art (Filter: Stream, auch bereits anderen zugewiesene).
+- **In der Galerie:** **„Auswählen“** → Bilder anklicken → unten *Zuweisen an …* (oder *Neue Person
+  anlegen*), *Fehlerkennung* oder *Löschen*. Filter **„nur noch nicht zugewiesene“** zeigt, was
+  noch offen ist.
+- **Einzelnes Bild:** im Bild-Dialog unter **„Wer ist das? Zuweisen“**.
+- Jede Zuweisung ist Lernstoff: Die Merkmale zählen künftig für die gewählte Person und als
+  Gegenbeispiel für die bisherige. Bilder mit sichtbarem Gesicht helfen am meisten.
+- Bilder einer anderen Art (z. B. ein Auto in eine Person) werden beim Zuweisen übersprungen.
+
+**Alles löschen:** Galerie → **„Alles löschen“** (oder Einstellungen → Speicher). Löscht alle
+Erkennungen und Bilder; wahlweise auch alle Personen/Objekte samt Gelerntem, die gelernten
+Fehlerkennungen und den Alarmverlauf. Zur Sicherheit muss „LÖSCHEN“ eingetippt werden.
 
 ## Wie die Wiedererkennung funktioniert
 

@@ -5,7 +5,7 @@ import os
 import threading
 
 DEFAULTS = {
-    "config_version": 2,
+    "config_version": 3,
     "server": {"host": "0.0.0.0", "port": 8096},
     "streams": [],
     "detection": {
@@ -15,6 +15,8 @@ DEFAULTS = {
         "threshold": 0.5,           # Grundschwelle
         "group_thresholds": {"person": 0.55},   # strengere Schwellen je Gruppe
         "person_min_aspect": 0.9,   # Person muss mindestens 0,9x so hoch wie breit sein (gegen Schatten)
+        "require_motion": ["person", "animal", "bike"],   # neue Objekte dieser Gruppen nur mit Bewegung
+        "motion_pixel_level": 18,   # Grauwert-Unterschied zum Hintergrund, ab dem ein Pixel als bewegt gilt
         "verify": True,             # Zweitpruefung neuer Objekte im vergroesserten Ausschnitt
         "verify_margin": 0.05,
         "verify_retry_s": 20,
@@ -61,7 +63,7 @@ def _merge(base, over):
     return out
 
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 
 
 def migrate(data):
@@ -77,6 +79,8 @@ def migrate(data):
         d.setdefault("verify", True)
         d.setdefault("person_min_aspect", 0.9)
         d.setdefault("model", "auto")
+    if v < 3:
+        d.setdefault("require_motion", ["person", "animal", "bike"])
     data["config_version"] = CONFIG_VERSION
     return True
 

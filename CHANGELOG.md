@@ -1,5 +1,18 @@
 # Änderungen
 
+## 2.1.0
+- Bewegungspflicht: neue Personen, Tiere und Fahrräder werden nur gemeldet, wenn sich an der
+  Stelle etwas bewegt – stehende Schatten, Plakate und Muster fallen heraus (je Gruppe einstellbar)
+- Person/Objekt von Hand anlegen („+ Person anlegen“) und danach Erkennungen zuweisen
+- Galerie: Auswahlmodus – mehrere Bilder anklicken und auf einmal zuweisen, als Fehlerkennung
+  lernen oder löschen; Filter „nur noch nicht zugewiesene“
+- Bild-Dialog: „Wer ist das? Zuweisen“ direkt sichtbar, inkl. „Neue Person anlegen“
+- Objekt-Dialog: „+ Erkennungen zuweisen“ mit Bildauswahl (nur passende Arten)
+- Zuweisen in eine falsche Art (z. B. Auto in eine Person) wird verhindert
+- „Alles löschen“ (Galerie und Einstellungen → Speicher): alle Erkennungen und Bilder, wahlweise
+  auch Personen/Objekte, gelernte Fehlerkennungen und Alarmverlauf
+- Behoben: Mehrere Objekte im selben Bild überschrieben gegenseitig ihre Bilddateien
+
 ## 2.0.0
 - Sentinel MK1 ist jetzt ausschließlich für den NVIDIA Jetson Nano: Unterstützung für den
   GL.iNet Brume 2 (install.sh, opkg/procd, Netzwerk-Core) entfernt
