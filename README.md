@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.2.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.3.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -159,6 +159,7 @@ oben in der Kopfzeile ein Hinweis (automatische Prüfung alle 6 Stunden, abschal
 
 | Modell | Eingang | Genauigkeit (COCO mAP) | empfohlen für |
 |---|---|---|---|
+| YOLOX-M | 640 px | 46,9 | Jetson-GPU, höchste Genauigkeit, ca. 3× langsamer – 1–2 Kameras |
 | **YOLOX-S** | 640 px | 40,5 | Jetson-GPU (Standard dort) |
 | YOLOX-Tiny | 416 px | 32,8 | ohne GPU (Standard dort), mehr Kameras |
 | NanoDet-Plus | 320/416 px | 30,4 | am schnellsten; Übergang, solange die YOLOX-Engine gebaut wird |
@@ -166,6 +167,29 @@ oben in der Kopfzeile ein Hinweis (automatische Prüfung alle 6 Stunden, abschal
 Ohne GPU (oder solange die TensorRT-Engines gebaut werden) rechnet Sentinel mit einer eigenen,
 schlanken KI-Laufzeit auf der CPU (`sentinel/onnxlite.py`, nur numpy, Ergebnisse identisch zu
 onnxruntime) – deutlich langsamer, aber ohne Ausfall.
+
+### Weit entfernte und kleine Objekte
+
+Das Modell sieht jedes Bild auf seine Eingangsgröße verkleinert (640 px). Eine Person, die im
+Kamerabild 40 px hoch ist, hat danach oft nur noch 20 px – zu wenig. Zwei Hebel helfen:
+
+1. **Höhere Analyse-Auflösung** – im Stream die **Breite auf 1280** stellen und, wenn möglich,
+   den **Hauptstream** der Kamera statt des Substreams (oft nur 640×480 oder 704×576) eintragen.
+   NVDEC dekodiert auch 1080p ohne CPU-Last.
+2. **Kachel-Analyse** (Standard mit GPU) – zusätzlich zum ganzen Bild werden 2–4 überlappende
+   Ausschnitte in voller Auflösung geprüft und die Ergebnisse zusammengeführt; am Kachelrand
+   abgeschnittene Objekte werden wieder zusammengesetzt. Kostet je Kachel eine weitere Analyse
+   (Anzeige unter System: „… Durchläufe inkl. Kacheln“).
+
+Der **Bewegungsfilter** misst jetzt die bewegte Fläche gegenüber dem Hintergrundbild statt des
+mittleren Bildunterschieds. Früher konnte eine kleine Person in einem sonst ruhigen Bild bis zu
+30 s übersehen werden, weil sie den Mittelwert kaum verändert.
+
+**Google Coral?** Ein Coral-USB-Stick bringt am Jetson keine bessere Erkennung: Über USB laufen
+nur kleine INT8-Modelle (bestes: EfficientDet-Lite2, 36 % mAP, ca. 100 ms), also ungenauer als
+YOLOX-S (40,5 %) auf der Jetson-GPU. Er lohnt sich für Rechner ohne GPU (z. B. Raspberry Pi).
+
+### Fehltreffer
 
 Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen zusammen:
 

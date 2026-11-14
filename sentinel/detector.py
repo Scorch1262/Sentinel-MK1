@@ -340,3 +340,97 @@ class FaceEngine:
         f = self.rec.run({self.rec.input_names[0]: x})[0].reshape(-1)
         n = np.linalg.norm(f)
         return (f / n).astype(np.float32) if n > 0 else None
+
+
+# ----------------------------------------------------------------------------
+# Kachel-Analyse: grosse Kamerabilder zusaetzlich in ueberlappenden Ausschnitten pruefen.
+# Das Modell sieht das Bild sonst verkleinert auf seine Eingangsgroesse (z. B. 640 px) -
+# weit entfernte Personen sind dann nur noch wenige Pixel hoch und werden uebersehen.
+# ----------------------------------------------------------------------------
+def tile_layout(W, H, S, max_tiles=4):
+    """Ausschnitte (x1, y1, x2, y2) mit ca. 20 % Ueberlappung; leer, wenn sich Kacheln nicht lohnen."""
+    if max(W, H) < S * 1.15:
+        return []
+    cols = max(1, int(np.ceil(W / (S * 1.2))))
+    rows = max(1, int(np.ceil(H / (S * 1.2))))
+    while cols * rows > max_tiles:
+        if cols >= rows:
+            cols -= 1
+        else:
+            rows -= 1
+    if cols * rows == 1:
+        if W >= H:
+            cols = 2
+        else:
+            rows = 2
+    tw = min(W, int(np.ceil(W / float(cols) * 1.2))) if cols > 1 else W
+    th = min(H, int(np.ceil(H / float(rows) * 1.2))) if rows > 1 else H
+    if cols == 2 and rows == 1:
+        tw = max(tw, min(W, H))                  # fast quadratisch -> Modell nutzt die Flaeche voll
+    out = []
+    for r in range(rows):
+        y0 = int(round(r * (H - th) / float(rows - 1))) if rows > 1 else 0
+        for c in range(cols):
+            x0 = int(round(c * (W - tw) / float(cols - 1))) if cols > 1 else 0
+            out.append((x0, y0, x0 + tw, y0 + th))
+    return out
+
+
+def _ios(a, b):
+    """Anteil der Flaeche von a, der in b liegt."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    ar = max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
+    return ix * iy / ar
+
+
+def detect_tiled(det, rgb, thr, allowed=None, mode="auto", max_tiles=4):
+    """Ganzes Bild + Kacheln; Ergebnisse zusammenfuehren. -> (detections, anzahl_durchlaeufe)"""
+    H, W = rgb.shape[:2]
+    full = det.detect(rgb, thr, allowed=allowed)
+    tiles = tile_layout(W, H, det.size, max_tiles) if mode != "off" else []
+    if not tiles:
+        return full, 1
+    cand = [(d, None) for d in full]
+    for (x0, y0, x1, y1) in tiles:
+        sub = np.ascontiguousarray(rgb[y0:y1, x0:x1])
+        for d in det.detect(sub, thr, allowed=allowed):
+            b = (d[0] + x0, d[1] + y0, d[2] + x0, d[3] + y0)
+            # Kante innerhalb des Bildes beruehrt -> Objekt evtl. abgeschnitten
+            cut = ((d[0] <= 2 and x0 > 0) or (d[2] >= x1 - x0 - 2 and x1 < W) or
+                   (d[1] <= 2 and y0 > 0) or (d[3] >= y1 - y0 - 2 and y1 < H))
+            cand.append(((b[0], b[1], b[2], b[3], d[4], d[5]), cut))
+    if not cand:
+        return [], 1 + len(tiles)
+    # Abgeschnittene Teilstuecke derselben Klasse wieder zusammensetzen
+    merged = []
+    used = set()
+    for i, (a, ca) in enumerate(cand):
+        if i in used:
+            continue
+        if ca:
+            for j in range(i + 1, len(cand)):
+                b, cb = cand[j]
+                if j in used or not cb or b[5] != a[5]:
+                    continue
+                oy = min(a[3], b[3]) - max(a[1], b[1])
+                ox = min(a[2], b[2]) - max(a[0], b[0])
+                hy = min(a[3] - a[1], b[3] - b[1])
+                wx = min(a[2] - a[0], b[2] - b[0])
+                if (ox > 0 and oy > 0.6 * hy) or (oy > 0 and ox > 0.6 * wx):
+                    a = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]), max(a[4], b[4]), a[5])
+                    used.add(j)
+        merged.append((a, ca))
+    boxes = np.array([m[0][:4] for m in merged], np.float32)
+    scores = np.array([m[0][4] for m in merged], np.float32)
+    cls = np.array([m[0][5] for m in merged], np.float32)
+    keep = nms(boxes + cls[:, None] * (max(W, H) * 2.0), scores, 0.5)
+    kept = sorted((merged[k] for k in keep), key=lambda m: -m[0][4])
+    out = []
+    for a, ca in kept:
+        # am Kachelrand abgeschnittenes Teilstueck, das in einem anderen Treffer steckt: weglassen
+        # (vollstaendige Treffer bleiben - verdeckte Personen hintereinander duerfen ineinander liegen)
+        if ca and any(o[5] == a[5] and _ios(a, o) >= 0.6 for o in out):
+            continue
+        out.append(a)
+    return out, 1 + len(tiles)

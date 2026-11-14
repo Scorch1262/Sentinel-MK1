@@ -869,7 +869,7 @@ function streamEditor(list) {
           el('button', {class: 'btn-mini del', onclick: () => { if (confirm('Stream „' + (s.name || '') + '“ entfernen?')) { list.splice(i, 1); draw(); } }}, 'Entfernen')),
         el('div', {class: 'r'}, url, tb),
         el('div', {class: 'r small'}, el('label', {class: 'chk'}, en, 'aktiv'), el('label', {class: 'chk'}, dt, 'Objekterkennung'),
-          el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Bilder/s'), fps), el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Breite'), w), tr, dc,
+          el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Bilder/s'), fps), el('span', {class: 'pair', title: 'Analyse-Auflösung – 1280 px erkennt weit entfernte Personen viel besser (Hauptstream nutzen)'}, el('span', {class: 'muted'}, 'Breite'), w), tr, dc,
           el('label', {class: 'chk', title: 'Nur Schlüsselbilder dekodieren – spart viel Rechenleistung, Live-Bild ruckelt'}, kf, 'nur Keyframes')),
         (st.decoder || st.transport) ? el('div', {class: 'muted small'}, 'Aktiv: ' + [st.decoder, st.transport ? 'RTSP ' + st.transport : ''].filter(Boolean).join(' · ') + (st.online ? ' · ' + st.fps + ' Bilder/s' : '')) : null,
         res,
@@ -888,13 +888,14 @@ async function loadSettings() {
   const se = streamEditor(streams);
   box.append(el('div', {class: 'panel', style: {gridColumn: '1/-1'}}, el('h3', null, 'Streams (Kameras)'), se.wrap,
     el('div', {class: 'actions'},
-      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 4, width: 640, decoder: 'auto', transport: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
+      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 4, width: S.state && S.state.gpu_available ? 1280 : 640, decoder: 'auto', transport: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
       el('button', {class: 'btn', onclick: async () => {
         try { await api('/api/streams', {body: {streams}}); toast('Streams gespeichert – verbinde …'); S.cfg = await api('/api/config'); fillSelects(); setTimeout(loadSettings, 1500); }
         catch (e) { toast(e.message); }
       }}, 'Streams speichern')),
     el('p', {class: 'muted small', style: {marginBottom: 0}}, 'H.264/H.265 werden per Hardware (NVDEC) dekodiert und skaliert – auch Hauptstreams (1080p) sind möglich. ',
       'MJPEG-Kameras laufen über ffmpeg. 2–5 Bilder/s je Kamera reichen für die Erkennung. ',
+      'Breite = Auflösung, mit der analysiert wird: 1280 px findet weit entfernte Personen deutlich besser als 640 px. ',
       'RTSP „automatisch“ verbindet über TCP und wechselt bei Problemen auf UDP (wie VLC). „Testen“ zeigt, woran eine Kamera scheitert.')));
   /* Erkennung */
   const D = C.detection;
@@ -920,15 +921,17 @@ async function loadSettings() {
     cp.append(el('label', {class: 'chk small'}, cb, c.de)); });
   const thr = numIn(Math.round(D.threshold * 100), {min: 20, max: 95, step: 5});
   const mdl = el('select', null, el('option', {value: 'auto'}, 'Automatisch (GPU: YOLOX-S, ohne GPU: YOLOX-Tiny)'),
+    el('option', {value: 'yolox_m'}, 'YOLOX-M 640 px – am genauesten, langsam (Jetson-GPU, 1–2 Kameras)'),
     el('option', {value: 'yolox_s'}, 'YOLOX-S 640 px – sehr genau (Jetson-GPU)'), el('option', {value: 'yolox_tiny'}, 'YOLOX-Tiny 416 px – genau'),
     el('option', {value: 'nanodet'}, 'NanoDet-Plus – am schnellsten, ungenau')); mdl.value = D.model || 'auto';
   const ms = el('select', null, el('option', {value: 320}, '320 px – schneller'), el('option', {value: 416}, '416 px – genauer')); ms.value = D.model_size;
   const msRow = [el('label', null, 'NanoDet-Größe'), ms];
   const updMs = () => msRow.forEach(e => e.style.display = mdl.value === 'nanodet' ? '' : 'none');
   mdl.onchange = updMs;
+  const tl = el('select', null, el('option', {value: 'auto'}, 'automatisch (mit GPU an)'), el('option', {value: 'on'}, 'immer an'), el('option', {value: 'off'}, 'aus')); tl.value = D.tiles || 'auto';
   const ac = el('select', null, el('option', {value: 'auto'}, 'automatisch (GPU, falls vorhanden)'), el('option', {value: 'gpu'}, 'GPU (TensorRT, Jetson)'), el('option', {value: 'cpu'}, 'nur CPU')); ac.value = D.accel || 'auto';
   const mh = numIn(D.min_hits, {min: 1, max: 10}), iv = numIn(D.interval_s, {min: .2, step: .1}), mg = el('input', {type: 'checkbox', checked: D.motion_gate});
-  const ml = numIn(D.motion_level, {min: .5, step: .5}), tt = numIn(D.track_timeout_s, {min: 1, step: .5}), rs = numIn(D.resnap_s, {min: 0, step: 10});
+  const ml = numIn(D.motion_area_pct != null ? D.motion_area_pct : 0.03, {min: 0, max: 5, step: 0.01}), tt = numIn(D.track_timeout_s, {min: 1, step: .5}), rs = numIn(D.resnap_s, {min: 0, step: 10});
   const mb = numIn(D.min_box_px, {min: 8}), en = el('input', {type: 'checkbox', checked: D.enabled});
   const sg = numIn(D.sighting_gap_s, {min: 0, step: 10});
   const vf = el('input', {type: 'checkbox', checked: D.verify !== false});
@@ -939,6 +942,9 @@ async function loadSettings() {
       el('label', null, 'Erkennung aktiv'), el('label', {class: 'chk'}, en, 'Streams analysieren'),
       el('label', null, 'Modell'), mdl,
       el('label', null, 'Rechenwerk'), ac,
+      el('label', null, 'Kachel-Analyse'), tl,
+      el('div', {class: 'hint'}, 'Große Kamerabilder werden zusätzlich in Ausschnitten geprüft – findet auch kleine, weit entfernte Personen. ',
+        'Lohnt sich ab ca. 800 px Bildbreite (Stream-Breite erhöhen bzw. Hauptstream nutzen). Kostet je Kachel eine weitere Analyse.'),
       msRow[0], msRow[1],
       el('label', null, 'Erkennen'), gl,
       el('label', null, 'Weitere Arten'), el('div', {class: 'row'}, el('button', {class: 'btn-mini', onclick: () => cp.hidden = !cp.hidden}, 'Einzelne Arten wählen (' + extra.size + ')'), cp),
@@ -950,7 +956,7 @@ async function loadSettings() {
       el('label', null, 'Verworfen'), fst,
       el('label', null, 'Analyse-Abstand'), el('div', {class: 'row'}, iv, ' s je Stream'),
       el('label', null, 'Bewegungsfilter'), el('div', {class: 'row'},
-        el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), el('span', {class: 'muted'}, 'Schwelle'), ml),
+        el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), el('span', {class: 'muted'}, 'ab'), ml, el('span', {class: 'muted'}, '% der Bildfläche')),
       el('label', null, 'Objekt verschwunden nach'), el('div', {class: 'row'}, tt, ' s'),
       el('label', null, 'Neue Sichtung nach'), el('div', {class: 'row'}, sg, ' s Abwesenheit im selben Stream'),
       el('label', null, 'Weiteres Bild alle'), el('div', {class: 'row'}, rs, ' s bei längerer Anwesenheit (0 = nie)'),
@@ -960,7 +966,7 @@ async function loadSettings() {
       saveSection('detection', {
         enabled: en.checked, groups: Object.keys(gch).filter(k => gch[k].checked), extra_classes: [...extra], threshold: +thr.value / 100,
         group_thresholds: gt, require_motion: Object.keys(gmov).filter(k => gmov[k].checked), model: mdl.value, model_size: +ms.value, accel: ac.value, min_hits: +mh.value, verify: vf.checked,
-        person_min_aspect: +pa.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
+        person_min_aspect: +pa.value, interval_s: +iv.value, motion_gate: mg.checked, motion_area_pct: +ml.value, tiles: tl.value,
         track_timeout_s: +tt.value, sighting_gap_s: +sg.value, resnap_s: +rs.value, min_box_px: +mb.value});
     }}, 'Speichern'))));
   setTimeout(updMs, 0);
@@ -1182,7 +1188,7 @@ async function updateSettingsStatus() {
   renderFan();
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');
-  if (ai) ai.textContent = st.models_ready ? (st.model_title ? st.model_title + ' · ' : '') + st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +
+  if (ai) ai.textContent = st.models_ready ? (st.model_title ? st.model_title + ' · ' : '') + st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') + (st.det_passes > 1 ? ' (' + st.det_passes + ' Durchläufe inkl. Kacheln)' : '') +
     (st.face_ms != null ? ' · Gesicht ' + st.face_ms + ' ms' : '') + (st.face_gpu ? ' (GPU)' : '') + (st.building ? ' · GPU-Engines werden gebaut …' : '') : (st.error || 'Modelle werden geladen …');
   const mt = $('#mtab');
   if (mt) { mt.innerHTML = ''; st.models.forEach(m => mt.append(el('tr', null, el('td', null, m.title), el('td', {class: 'muted small'}, (m.size / 1048576).toFixed(1) + ' MB · ' + m.license),

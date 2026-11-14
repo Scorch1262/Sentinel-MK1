@@ -22,6 +22,8 @@ DETECTORS = {
                        note="genauer, ca. 4× Rechenaufwand von NanoDet"),
     "yolox_s": dict(key="yolox_s", title="YOLOX-S", input=640, kind="yolox",
                     note="deutlich genauer – empfohlen für Jetson-GPU"),
+    "yolox_m": dict(key="yolox_m", title="YOLOX-M", input=640, kind="yolox",
+                    note="am genauesten, ca. 3× Rechenaufwand von YOLOX-S – für 1–2 Kameras"),
 }
 
 MODELS = {
@@ -34,6 +36,9 @@ MODELS = {
     "yolox_s": dict(file="object_detection_yolox_2022nov.onnx", path="object_detection_yolox/",
                     size=35858002, sha256="c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
                     title="YOLOX-S (Objekte, 80 Klassen)", license="Apache-2.0"),
+    "yolox_m": dict(file="yolox_m.onnx", urls=[YOLOX_REL + "yolox_m.onnx"],
+                    size=101259744, sha256="21ff6cfdeb53b013bac2249599e55f00bff3cfdfdab37ed7a4620818c1d15b3f",
+                    title="YOLOX-M (Objekte, 80 Klassen)", license="Apache-2.0"),
     "face_det": dict(file="face_detection_yunet_2023mar.onnx", path="face_detection_yunet/",
                      size=232589, sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
                      title="YuNet (Gesichter finden)", license="MIT"),
@@ -91,7 +96,7 @@ class ModelManager:
     # ------------------------------------------------------------------
     # TensorRT-Engines (nur Jetson): einmalig aus den ONNX-Modellen bauen
     # ------------------------------------------------------------------
-    ENGINES = {"detector": "nanodet_416", "yolox_tiny": "yolox_tiny_416", "yolox_s": "yolox_s_640",
+    ENGINES = {"detector": "nanodet_416", "yolox_tiny": "yolox_tiny_416", "yolox_s": "yolox_s_640", "yolox_m": "yolox_m_640",
                "face_rec": "sface_112"}
 
     def engine_path(self, key):

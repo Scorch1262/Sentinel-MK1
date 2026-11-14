@@ -11,7 +11,7 @@ import urllib.request
 import numpy as np
 
 from . import imaging, sysinfo, trt
-from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet, YoloX
+from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet, YoloX, detect_tiled
 from .models import DETECTORS, ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
@@ -212,6 +212,7 @@ class Engine:
         self.faces = None
         self.det_lock = threading.Lock()
         self.det_ms = collections.deque(maxlen=30)
+        self.det_passes = collections.deque(maxlen=30)
         self.face_ms = collections.deque(maxlen=30)
         self.engine_error = ""
         self.cooldown = {}
@@ -282,7 +283,15 @@ class Engine:
                     t = time.time()
                     det = None
                     eng = self.models.engine_path(key) if gpu and self.models.engine_ok(key) else None
-                    if gpu and not eng and key != "detector" and self.models.engine_ok("detector") \
+                    if gpu and not eng and key == "yolox_m" and self.models.engine_ok("yolox_s") \
+                            and self.models.ok("yolox_s", quick=True):
+                        try:
+                            det = YoloX(self.models.path("yolox_s"), 640, engine=self.models.engine_path("yolox_s"),
+                                        title="YOLOX-S")
+                            self.log("Übergangsweise YOLOX-S (GPU), bis die YOLOX-M-Engine fertig ist")
+                        except Exception:
+                            det = None
+                    if det is None and gpu and not eng and key != "detector" and self.models.engine_ok("detector") \
                             and self.models.ok("detector", quick=True):
                         # Engine des gewaehlten Modells wird noch gebaut: so lange NanoDet auf der GPU
                         try:
@@ -421,32 +430,44 @@ class Engine:
         H, W = frame.shape[:2]
         tracks = self.tracks.setdefault(w.id, [])
         self._update_background(w.id, frame, d)
-        # Bewegungsfilter: ruhige Szene -> keine Analyse (vorhandene Objekte bleiben bestehen)
-        gray = imaging.gray_small(frame)
+        # Bewegungsfilter: ruhige Szene -> keine Analyse (vorhandene Objekte bleiben bestehen).
+        # Massgeblich ist die bewegte Flaeche gegenueber dem Hintergrundmodell - auch eine kleine,
+        # weit entfernte Person loest die Analyse aus (frueher: mittlerer Bildunterschied).
         if d.get("motion_gate", True):
-            prev = self.last_gray.get(w.id)
             full_age = now - self.last_full.get(w.id, 0)
             pending = any(not t.confirmed for t in tracks)
-            if prev is not None and full_age < 30 and not pending:
-                diff = float(np.abs(gray - prev).mean())
-                if diff < float(d.get("motion_level", 2.5)):
+            m = self.motion.get(w.id)
+            if m is not None and full_age < 20 and not pending:
+                frac = float(m.mean()) * 100.0
+                if frac < float(d.get("motion_area_pct", 0.08)):
                     for t in tracks:
                         t.last_ts = now
                     self._publish_live(w.id, W, H, tracks, now, idle=True)
                     return
-        self.last_gray[w.id] = gray
         self.last_full[w.id] = now
         t0 = time.time()
         thr = self._thresholds(d)
         with self.det_lock:
-            dets = self.det.detect(frame, min(thr.values()), allowed=self._allowed()) if self.det else []
+            if self.det:
+                dets, passes = detect_tiled(self.det, frame, min(thr.values()), allowed=self._allowed(),
+                                            mode=self._tile_mode(d), max_tiles=int(d.get("max_tiles", 4)))
+            else:
+                dets, passes = [], 0
         self.det_ms.append((time.time() - t0) * 1000)
+        self.det_passes.append(passes)
         dets = self._plausible(dets, thr, d, W, H)
         self._update_tracks(w, tracks, dets, frame, idx, now, d)
         jpg = w.jpeg_for(idx)
         if jpg:
             self.analyzed[w.id] = (now, jpg)
         self._publish_live(w.id, W, H, tracks, now)
+
+    def _tile_mode(self, d):
+        """Kachel-Analyse: on | off | auto (auto = nur mit GPU, auf der CPU zu langsam)."""
+        m = d.get("tiles", "auto")
+        if m == "auto":
+            return "on" if (self.det is not None and getattr(self.det, "gpu", False)) else "off"
+        return "on" if m == "on" else "off"
 
     def _thresholds(self, d):
         """Mindest-Sicherheit je Gruppe (person/animal/vehicle/...); Grundwert fuer alle anderen."""
@@ -540,7 +561,7 @@ class Engine:
     # ------------------------------------------------------------------
     # Bewegungspflicht: neue Personen/Tiere nur, wenn sich dort etwas bewegt
     # ------------------------------------------------------------------
-    BG_W = 160
+    BG_W = 256
 
     def _update_background(self, sid, frame, d):
         H, W = frame.shape[:2]
@@ -1346,6 +1367,8 @@ class Engine:
                     model_choice=self.detector_choice(), filter_stats=dict(self.stats),
                     false_count=len(self.false_positives()),
                     det_ms=round(sum(dm) / len(dm)) if dm else None,
+                    det_passes=round(sum(self.det_passes) / float(len(self.det_passes)), 1) if self.det_passes else None,
+                    tile_mode=self._tile_mode(self.cfg.get("detection")),
                     face_ms=round(sum(fm) / len(fm)) if fm else None, ffmpeg=bool(find_ffmpeg()),
                     error=self.engine_error, load=load, unack=unack, alarm_seq=self.alarm_seq,
                     uptime=int(time.time() - self.started), time=time.time(),

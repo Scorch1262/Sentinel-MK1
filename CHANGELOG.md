@@ -1,5 +1,17 @@
 # Änderungen
 
+## 2.3.0
+- Kachel-Analyse (Standard mit GPU): große Kamerabilder werden zusätzlich in 2–4 überlappenden
+  Ausschnitten geprüft – deutlich mehr kleine, weit entfernte Personen werden gefunden;
+  abgeschnittene Teile am Kachelrand werden zusammengesetzt
+- Neues Modell YOLOX-M (46,9 statt 40,5 COCO-mAP) als Option für die Jetson-GPU; solange die
+  Engine gebaut wird, läuft übergangsweise YOLOX-S
+- Bewegungsfilter misst die bewegte Bildfläche statt des mittleren Bildunterschieds – kleine
+  Personen in ruhigen Szenen lösen die Analyse jetzt sofort aus (früher bis zu 30 s später);
+  feineres Bewegungsraster
+- Neue Streams starten mit 1280 px Analyse-Breite (mit GPU); Hinweise zur Auflösung
+- Systemanzeige: Durchläufe je Bild (inkl. Kacheln)
+
 ## 2.2.0
 - Einstellungen überarbeitet: nichts überlappt mehr oder ragt über den Rand – Felder mit
   Einheit/Erklärung brechen sauber um, zwei Spalten erst ab ausreichender Breite,

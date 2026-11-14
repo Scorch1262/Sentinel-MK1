@@ -10,7 +10,7 @@ DEFAULTS = {
     "streams": [],
     "detection": {
         "enabled": True,
-        "model": "auto",            # auto | nanodet | yolox_tiny | yolox_s  (auto: GPU -> yolox_s, sonst yolox_tiny)
+        "model": "auto",            # auto | nanodet | yolox_tiny | yolox_s | yolox_m  (auto: GPU -> yolox_s, sonst yolox_tiny)
         "model_size": 416,          # nur NanoDet auf der CPU: 320 = schneller, 416 = genauer
         "threshold": 0.5,           # Grundschwelle
         "group_thresholds": {"person": 0.55},   # strengere Schwellen je Gruppe
@@ -25,7 +25,9 @@ DEFAULTS = {
         "min_hits": 3,              # so oft hintereinander erkannt, bis eine Sichtung zaehlt
         "interval_s": 0.3,          # Mindestabstand zwischen zwei Analysen je Stream
         "motion_gate": True,        # ohne Bewegung keine (teure) Analyse
-        "motion_level": 2.5,
+        "motion_area_pct": 0.03,    # Analyse erst, wenn sich mind. so viel % der Bildflaeche bewegt
+        "tiles": "auto",            # Kachel-Analyse: auto (mit GPU) | on | off
+        "max_tiles": 4,
         "track_timeout_s": 6.0,
         "resnap_s": 120,            # bei laengerer Anwesenheit alle x s ein weiteres Bild
         "sighting_gap_s": 60,       # erst nach so langer Abwesenheit im selben Stream zaehlt eine neue Sichtung
