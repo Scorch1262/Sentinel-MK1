@@ -191,6 +191,83 @@ class NanoDet:
         return res
 
 
+def _resize_fast(rgb, w, h):
+    """Bilinear mit OpenCV (falls vorhanden), sonst numpy."""
+    try:
+        import cv2
+        return cv2.resize(rgb, (w, h), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        return imaging.resize_bilinear(rgb, w, h)
+
+
+class YoloX:
+    """YOLOX-S (640) / YOLOX-Tiny (416), COCO 80 Klassen, Apache-2.0.
+    Eingang: BGR 0..255 (ohne Normierung), Letterbox oben links mit Grau 114."""
+
+    def __init__(self, path, size, engine=None, title="YOLOX"):
+        self.size = int(size)
+        self.title = title
+        self.gpu = False
+        if engine:
+            from .trt import TrtModel
+            self.net = TrtModel(engine)
+            self.gpu = True
+        else:
+            self.net = OnnxModel(path)
+        grids, strides = [], []
+        for st in (8, 16, 32):
+            n = self.size // st
+            yv, xv = np.mgrid[0:n, 0:n]
+            grids.append(np.stack([xv.ravel(), yv.ravel()], 1))
+            strides.append(np.full((n * n, 1), st))
+        self.grid = np.concatenate(grids).astype(np.float32)
+        self.stride = np.concatenate(strides).astype(np.float32)
+
+    @property
+    def backend(self):
+        return "TensorRT (GPU, FP16)" if self.gpu else "numpy (onnxlite, CPU)"
+
+    def infer(self, rgb):
+        """Rohvorhersage (N, 6): x1, y1, x2, y2, Wert, Klasse - in Pixeln des Eingangsbildes, ohne Schwelle."""
+        H, W = rgb.shape[:2]
+        S = self.size
+        r = min(S / float(W), S / float(H))
+        nw, nh = max(1, int(W * r)), max(1, int(H * r))
+        img = _resize_fast(rgb, nw, nh)
+        canvas = np.full((S, S, 3), 114, np.float32)
+        canvas[:nh, :nw] = img[:, :, ::-1]        # BGR
+        x = canvas.transpose(2, 0, 1)[None]
+        out = self.net.run({self.net.input_names[0]: x})[0]
+        o = np.asarray(out, np.float32).reshape(-1, 85)
+        xy = (o[:, :2] + self.grid) * self.stride
+        wh = np.exp(np.minimum(o[:, 2:4], 10.0)) * self.stride
+        sc = o[:, 4:5] * o[:, 5:]
+        cls = sc.argmax(1)
+        best = sc[np.arange(sc.shape[0]), cls]
+        boxes = np.concatenate([xy - wh / 2, xy + wh / 2], 1) / r
+        return boxes, best, cls
+
+    def detect(self, rgb, thr=0.45, iou=0.45, allowed=None):
+        H, W = rgb.shape[:2]
+        boxes, best, cls = self.infer(rgb)
+        m = best >= thr
+        if allowed is not None:
+            m &= np.isin(cls, allowed)
+        if not m.any():
+            return []
+        boxes, best, cls = boxes[m], best[m], cls[m]
+        keep = nms(boxes + cls[:, None].astype(np.float32) * (max(W, H) * 2.0), best, iou)
+        res = []
+        for i in keep:
+            x1, y1, x2, y2 = boxes[i]
+            x1, y1 = max(0.0, float(x1)), max(0.0, float(y1))
+            x2, y2 = min(float(W), float(x2)), min(float(H), float(y2))
+            if x2 - x1 < 4 or y2 - y1 < 4:
+                continue
+            res.append((x1, y1, x2, y2, float(best[i]), int(cls[i])))
+        return res
+
+
 class FaceEngine:
     """YuNet (Gesicht + 5 Punkte) und SFace (128-dim. Merkmal, Kosinus-Aehnlichkeit)."""
 

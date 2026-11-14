@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=1.3.0
+VERSION=1.4.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -193,6 +193,8 @@ getmodel() {   # pfad datei groesse sha256
 getmodel object_detection_nanodet object_detection_nanodet_2022nov.onnx 3800954 4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186
 getmodel face_detection_yunet face_detection_yunet_2023mar.onnx 232589 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
 getmodel face_recognition_sface face_recognition_sface_2021dec.onnx 38696353 0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79
+# YOLOX-S: deutlich genaueres Erkennungsmodell fuer die GPU (Standard auf dem Jetson)
+getmodel object_detection_yolox object_detection_yolox_2022nov.onnx 35858002 c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063
 
 # ---------------------------------------------------------------------------
 # 6) TensorRT-Engines bauen (GPU, FP16) - einmalig, je nach Modell 3-15 Minuten
@@ -216,6 +218,7 @@ if [ -n "$TRTV" ] && [ -x "$TRTEXEC" ]; then
             log "WARNUNG: Engine $2 fehlgeschlagen - Protokoll: $DIR/data/models/$2.trtexec.log (Erkennung dann auf der CPU)"
         fi
     }
+    build object_detection_yolox_2022nov.onnx yolox_s_640
     build object_detection_nanodet_2022nov.onnx nanodet_416
     build face_recognition_sface_2021dec.onnx sface_112
 else

@@ -122,6 +122,13 @@ class Api:
                              "ORDER BY sort, name")
         if path == "/api/alarms":
             return e.store.q("SELECT * FROM alarms ORDER BY id")
+        if path == "/api/falsepos":
+            rows = e.store.q("SELECT id, ts, stream_id, stream_name, cls, x1, y1, x2, y2, crop FROM false_pos "
+                             "ORDER BY id DESC LIMIT 500")
+            for r in rows:
+                r["cls_de"] = DE.get(r["cls"], r["cls"])
+                r["crop"] = "/falsepos/" + r["crop"] if r["crop"] else None
+            return rows
         if path == "/api/events":
             lim = int(qs.get("limit", ["100"])[0])
             rows = e.store.q("SELECT a.*, d.crop FROM alarm_events a LEFT JOIN detections d ON d.id=a.det_id "
@@ -244,7 +251,7 @@ class Api:
             e.cfg.update(sec, vals)
             if sec == "detection":
                 new = e.cfg.get("detection")
-                if new.get("model_size") != old.get("model_size") or new.get("use_opencv") != old.get("use_opencv"):
+                if any(new.get(k) != old.get(k) for k in ("model", "model_size", "use_opencv", "accel")):
                     threading.Thread(target=e.reload_detector, daemon=True).start()
             return dict(ok=True)
         if path == "/api/streams":
@@ -289,6 +296,22 @@ class Api:
             if sets:
                 e.store.x("UPDATE objects SET %s WHERE id=?" % ", ".join(sets), args + [oid])
             return dict(ok=True)
+        m = re.match(r"^/api/detection/(\d+)/false$", path)
+        if m:
+            did = int(m.group(1))
+            ids = [did]
+            if body.get("whole_track"):
+                r = e.store.q("SELECT track FROM detections WHERE id=?", (did,), one=True)
+                if r and r["track"]:
+                    ids = [x["id"] for x in e.store.q("SELECT id FROM detections WHERE track=?", (r["track"],))]
+            return dict(ok=True, learned=e.mark_false(ids))
+        m = re.match(r"^/api/objects/(\d+)/false$", path)
+        if m:
+            ids = [x["id"] for x in e.store.q("SELECT id FROM detections WHERE object_id=?", (int(m.group(1)),))]
+            n = e.mark_false(ids)
+            if e.store.q("SELECT id FROM objects WHERE id=?", (int(m.group(1)),), one=True):
+                e.delete_object(int(m.group(1)), delete_detections=True)
+            return dict(ok=True, learned=n)
         m = re.match(r"^/api/objects/(\d+)/merge$", path)
         if m:
             e.merge_objects(int(m.group(1)), int(body["into"]))
@@ -377,6 +400,19 @@ class Api:
         if m:
             e.store.x("DELETE FROM alarms WHERE id=?", (int(m.group(1)),))
             return dict(ok=True)
+        m = re.match(r"^/api/falsepos/(\d+|alle)$", path)
+        if m:
+            fdir = os.path.join(e.data_dir, "falsepos")
+            rows = e.store.q("SELECT id, crop FROM false_pos" + ("" if m.group(1) == "alle" else " WHERE id=%d" % int(m.group(1))))
+            for r in rows:
+                if r["crop"]:
+                    try:
+                        os.remove(os.path.join(fdir, r["crop"]))
+                    except OSError:
+                        pass
+                e.store.x("DELETE FROM false_pos WHERE id=?", (r["id"],))
+            e.fp_cache = None
+            return dict(ok=True, deleted=len(rows))
         raise KeyError("unbekannt")
 
 
@@ -448,6 +484,9 @@ def make_handler(engine, api):
                     if not p.startswith(engine.snap_dir):
                         return self._json(403, dict(error="verboten"))
                     return self._file(p, cache=True)
+                m = re.match(r"^/falsepos/(fp_\d+\.png)$", path)
+                if m:
+                    return self._file(os.path.join(engine.data_dir, "falsepos", m.group(1)), cache=True)
                 m = re.match(r"^/avatar/(\d+)\.png$", path)
                 if m:
                     return self._file(os.path.join(engine.avatar_dir, "%s.png" % m.group(1)), cache=True)

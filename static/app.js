@@ -370,6 +370,11 @@ async function openDetection(id) {
       el('div', {class: 'actions'},
         el('button', {class: 'btn', onclick: async () => { fix.hidden = !fix.hidden; if (!fix.hidden) { await objectOptions(sel, d.cls, d.object_id, true); sel.onchange(); } }}, 'Zuordnung korrigieren'),
         d.object_id ? el('button', {class: 'btn btn-ghost', onclick: () => openObject(d.object_id)}, 'Objekt öffnen') : null,
+        el('button', {class: 'btn btn-danger', title: 'Kein echtes Objekt (z. B. Schatten) – Sentinel lernt daraus', onclick: async () => {
+          const all = d.track_count > 1 && confirm('Alle ' + d.track_count + ' Bilder dieser Sichtung als Fehlerkennung lernen?\n(Abbrechen = nur dieses Bild)');
+          try { const r = await api('/api/detection/' + d.id + '/false', {body: {whole_track: all}}); toast(r.learned + ' Fehlerkennung(en) gelernt – wird künftig ignoriert'); closeModal(); refreshCurrent(); }
+          catch (e) { toast(e.message); }
+        }}, 'Fehlerkennung'),
         el('a', {class: 'btn btn-ghost', href: d.img || d.crop, download: '', style: {textDecoration: 'none'}}, 'Bild laden'),
         el('button', {class: 'btn btn-danger', onclick: async () => {
           if (!confirm('Dieses Bild löschen?')) return;
@@ -481,6 +486,11 @@ async function openObject(id) {
           el('button', {class: 'btn', onclick: async () => {
             await saveObj(o.id, {name: name.value, notes: notes.value, category_id: cat.value || null}); loadObjects(); openObject(o.id);
           }}, 'Speichern'),
+          el('button', {class: 'btn btn-danger', title: 'Alle Bilder dieses Objekts sind Fehltreffer (z. B. Schatten)', onclick: async () => {
+            if (!confirm('„' + o.label + '“ ist kein echtes Objekt?\nAlle ' + o.detections + ' Bilder werden als Fehlerkennung gelernt und das Objekt gelöscht.')) return;
+            try { const r = await api('/api/objects/' + o.id + '/false', {body: {}}); toast(r.learned + ' Fehlerkennung(en) gelernt'); closeModal(); loadObjects(); }
+            catch (e) { toast(e.message); }
+          }}, 'Ist Fehlerkennung'),
           el('button', {class: 'btn btn-ghost', onclick: async () => { mergeBox.hidden = !mergeBox.hidden;
             if (!mergeBox.hidden) { await objectOptions(merge, o.cls, o.id, false); } }}, 'Zusammenführen …'),
           el('button', {class: 'btn btn-danger', onclick: async () => {
@@ -694,44 +704,70 @@ async function loadSettings() {
       'Tipp für den Brume 2: den Unter-/Substream der Kamera verwenden (z. B. 640×360). 1–2 Bilder/s reichen für die Erkennung. Die Bildbreite wird vor der Analyse verkleinert.')));
   /* Erkennung */
   const D = C.detection;
+  const GT = Object.assign({}, D.group_thresholds || {});
   const gl = el('div', {class: 'grp-list'});
-  const gch = {};
+  const gch = {}, gthr = {};
+  gl.append(el('div', {class: 'g head'}, el('span'), el('span'), el('span', null, 'Gruppe'), el('span', null, 'Mindest-Sicherheit')));
   S.meta.groups.forEach(g => {
     gch[g.id] = el('input', {type: 'checkbox', checked: D.groups.includes(g.id)});
-    gl.append(el('label', {class: 'chk g'}, gch[g.id], el('i', {style: {borderColor: g.color}}), g.name,
-      el('span', {class: 'muted small'}, ' – ' + g.classes.slice(0, 6).map(c => S.meta.classes.find(x => x.id === c).de).join(', ') + (g.classes.length > 6 ? ' …' : ''))));
+    gthr[g.id] = numIn(Math.round((GT[g.id] != null ? GT[g.id] : D.threshold) * 100), {min: 20, max: 95, step: 5, class: 'thr'});
+    gl.append(el('div', {class: 'g'}, gch[g.id], el('i', {style: {borderColor: g.color}}),
+      el('label', {class: 'gname', title: g.classes.map(c => S.meta.classes.find(x => x.id === c).de).join(', ')}, g.name,
+        el('span', {class: 'muted small'}, g.classes.slice(0, 4).map(c => S.meta.classes.find(x => x.id === c).de).join(', ') + (g.classes.length > 4 ? ' …' : ''))),
+      el('span', {class: 'thrbox'}, gthr[g.id], ' %')));
+    gl.lastChild.querySelector('.gname').onclick = () => { gch[g.id].checked = !gch[g.id].checked; };
   });
   const extra = new Set(D.extra_classes || []);
   const cp = el('div', {class: 'cls-pick', hidden: true});
   S.meta.classes.forEach(c => { const cb = el('input', {type: 'checkbox', checked: extra.has(c.id)}); cb.onchange = () => cb.checked ? extra.add(c.id) : extra.delete(c.id);
     cp.append(el('label', {class: 'chk small'}, cb, c.de)); });
-  const thr = el('input', {type: 'range', min: .2, max: .9, step: .05, value: D.threshold}); const thrv = el('span', {class: 'mono'}, Math.round(D.threshold * 100) + ' %');
-  thr.oninput = () => thrv.textContent = Math.round(thr.value * 100) + ' %';
+  const thr = numIn(Math.round(D.threshold * 100), {min: 20, max: 95, step: 5});
+  const mdl = el('select', null, el('option', {value: 'auto'}, 'Automatisch (Jetson-GPU: YOLOX-S, sonst NanoDet)'),
+    el('option', {value: 'yolox_s'}, 'YOLOX-S 640 px – sehr genau (Jetson-GPU)'), el('option', {value: 'yolox_tiny'}, 'YOLOX-Tiny 416 px – genau'),
+    el('option', {value: 'nanodet'}, 'NanoDet-Plus – schnell (Brume 2 / CPU)')); mdl.value = D.model || 'auto';
   const ms = el('select', null, el('option', {value: 320}, '320 px – schnell (empfohlen für Brume 2)'), el('option', {value: 416}, '416 px – genauer, ca. 1,7× Rechenzeit')); ms.value = D.model_size;
+  const msRow = [el('label', null, 'NanoDet-Größe'), ms];
+  const updMs = () => msRow.forEach(e => e.style.display = (mdl.value === 'nanodet' || (mdl.value === 'auto' && !S.state.gpu_available)) ? '' : 'none');
+  mdl.onchange = updMs;
   const ac = el('select', null, el('option', {value: 'auto'}, 'automatisch (GPU, falls vorhanden)'), el('option', {value: 'gpu'}, 'GPU (TensorRT, Jetson)'), el('option', {value: 'cpu'}, 'nur CPU')); ac.value = D.accel || 'auto';
   const mh = numIn(D.min_hits, {min: 1, max: 10}), iv = numIn(D.interval_s, {min: .2, step: .1}), mg = el('input', {type: 'checkbox', checked: D.motion_gate});
   const ml = numIn(D.motion_level, {min: .5, step: .5}), tt = numIn(D.track_timeout_s, {min: 1, step: .5}), rs = numIn(D.resnap_s, {min: 0, step: 10});
   const mb = numIn(D.min_box_px, {min: 8}), en = el('input', {type: 'checkbox', checked: D.enabled});
   const sg = numIn(D.sighting_gap_s, {min: 0, step: 10});
+  const vf = el('input', {type: 'checkbox', checked: D.verify !== false});
+  const pa = numIn(D.person_min_aspect != null ? D.person_min_aspect : 0.9, {min: 0, max: 2, step: 0.1});
+  const fst = el('span', {class: 'mono small', id: 'filterStats'});
   box.append(el('div', {class: 'panel'}, el('h3', null, 'Objekterkennung'),
     el('div', {class: 'form'},
       el('label', null, 'Erkennung aktiv'), el('label', {class: 'chk'}, en, 'Streams analysieren'),
+      el('label', null, 'Modell'), mdl,
+      el('label', null, 'Rechenwerk'), ac,
+      msRow[0], msRow[1],
       el('label', null, 'Erkennen'), gl,
       el('label', null, 'Weitere Arten'), el('div', null, el('button', {class: 'btn-mini', onclick: () => cp.hidden = !cp.hidden}, 'Einzelne Arten wählen (' + extra.size + ')'), cp),
-      el('label', null, 'Mindest-Sicherheit'), el('div', {style: {display: 'flex', gap: '10px', alignItems: 'center'}}, thr, thrv),
-      el('label', null, 'Rechenwerk'), ac,
-      el('label', null, 'Modellgröße'), ms, el('div', {class: 'hint'}, 'Auf der Jetson-GPU wird immer mit 416 px gerechnet.'),
+      el('label', null, 'Grundschwelle'), el('div', null, thr, ' % für einzeln gewählte Arten'),
+      el('label', null, 'Zweitprüfung'), el('label', {class: 'chk'}, vf, 'neue Objekte im vergrößerten Ausschnitt nochmal prüfen'),
+      el('div', {class: 'hint'}, 'Verwirft die meisten Schatten, Spiegelungen und Muster. Kostet nur bei neuen Objekten eine zusätzliche Analyse.'),
+      el('label', null, 'Personen-Form'), el('div', null, pa, ' × Breite – mindestens so hoch muss eine Person sein (0 = aus)'),
       el('label', null, 'Sichtung ab'), el('div', null, mh, ' Treffern hintereinander'),
+      el('label', null, 'Verworfen'), fst,
       el('label', null, 'Analyse-Abstand'), el('div', null, iv, ' s je Stream'),
-      el('label', null, 'Bewegungsfilter'), el('div', null, el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), ' Schwelle ', ml),
+      el('label', null, 'Bewegungsfilter'), el('div', {style: {display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap'}},
+        el('label', {class: 'chk'}, mg, 'nur bei Bewegung analysieren'), el('span', {class: 'muted'}, 'Schwelle'), ml),
       el('label', null, 'Objekt verschwunden nach'), el('div', null, tt, ' s'),
       el('label', null, 'Neue Sichtung nach'), el('div', null, sg, ' s Abwesenheit im selben Stream'),
       el('label', null, 'Weiteres Bild alle'), el('div', null, rs, ' s bei längerer Anwesenheit (0 = nie)'),
       el('label', null, 'Mindestgröße'), el('div', null, mb, ' px Höhe')),
-    el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => saveSection('detection', {
-      enabled: en.checked, groups: Object.keys(gch).filter(k => gch[k].checked), extra_classes: [...extra], threshold: +thr.value,
-      model_size: +ms.value, accel: ac.value, min_hits: +mh.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
-      track_timeout_s: +tt.value, sighting_gap_s: +sg.value, resnap_s: +rs.value, min_box_px: +mb.value})}, 'Speichern'))));
+    el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => {
+      const gt = {}; Object.keys(gthr).forEach(k => { gt[k] = +gthr[k].value / 100; });
+      saveSection('detection', {
+        enabled: en.checked, groups: Object.keys(gch).filter(k => gch[k].checked), extra_classes: [...extra], threshold: +thr.value / 100,
+        group_thresholds: gt, model: mdl.value, model_size: +ms.value, accel: ac.value, min_hits: +mh.value, verify: vf.checked,
+        person_min_aspect: +pa.value, interval_s: +iv.value, motion_gate: mg.checked, motion_level: +ml.value,
+        track_timeout_s: +tt.value, sighting_gap_s: +sg.value, resnap_s: +rs.value, min_box_px: +mb.value});
+    }}, 'Speichern'))));
+  setTimeout(updMs, 0);
+  box.append(falsePosPanel());
   /* Wiedererkennung */
   const I = C.identity;
   const fa = el('input', {type: 'checkbox', checked: I.faces}), ft = numIn(I.face_threshold, {min: .2, max: .9, step: .01});
@@ -807,6 +843,28 @@ async function loadSettings() {
   if (S.state.fan && S.state.fan.available) box.append(fanPanel());
   box.append(updatePanel());
   updateSettingsStatus();
+}
+/* Gelernte Fehlerkennungen */
+function falsePosPanel() {
+  const list = el('div', {class: 'fp-list'});
+  const cnt = el('span', {class: 'mono'});
+  const load = async () => {
+    const rows = await api('/api/falsepos');
+    cnt.textContent = rows.length + ' gelernt';
+    list.innerHTML = '';
+    if (!rows.length) list.append(el('div', {class: 'muted small'}, 'Noch keine. In der Galerie bei einem falschen Treffer „Fehlerkennung“ wählen.'));
+    rows.forEach(r => list.append(el('div', {class: 'fp', title: r.cls_de + ' · ' + r.stream_name + ' · ' + fmtTime(r.ts, true)},
+      el('div', {class: 'img', style: {backgroundImage: r.crop ? 'url(' + r.crop + ')' : 'none'}}),
+      el('span', null, r.cls_de), el('span', {class: 'muted'}, r.stream_name),
+      el('button', {class: 'btn-mini del', onclick: async () => { await api('/api/falsepos/' + r.id, {method: 'DELETE'}); load(); }}, '✕'))));
+  };
+  load();
+  return el('div', {class: 'panel'}, el('h3', null, 'Gelernte Fehlerkennungen'),
+    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Treffer, die als „kein echtes Objekt“ markiert wurden (z. B. Schatten). ',
+      'Taucht an derselben Stelle im selben Stream wieder so etwas auf, meldet Sentinel es nicht mehr.'),
+    el('div', {class: 'bar', style: {marginBottom: '10px'}}, cnt, el('div', {class: 'grow'}),
+      el('button', {class: 'btn-mini del', onclick: async () => { if (!confirm('Alle gelernten Fehlerkennungen vergessen?')) return; await api('/api/falsepos/alle', {method: 'DELETE'}); load(); }}, 'Alle vergessen')),
+    list);
 }
 /* Luefter (Jetson) */
 function fanCurveSvg(F) {
@@ -920,10 +978,13 @@ function renderUpdate() {
 }
 async function updateSettingsStatus() {
   renderUpdate();
+  const fs = $('#filterStats'), st0 = S.state;
+  if (fs && st0 && st0.filter_stats) fs.textContent = 'seit Start: ' + st0.filter_stats.rejected_verify + '× Zweitprüfung, ' +
+    st0.filter_stats.rejected_shape + '× Form, ' + st0.filter_stats.rejected_fp + '× gelernte Fehlerkennung';
   renderFan();
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');
-  if (ai) ai.textContent = st.models_ready ? st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +
+  if (ai) ai.textContent = st.models_ready ? (st.model_title ? st.model_title + ' · ' : '') + st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +
     (st.face_ms != null ? ' · Gesicht ' + st.face_ms + ' ms' : '') + (st.face_gpu ? ' (GPU)' : '') + (st.building ? ' · GPU-Engines werden gebaut …' : '') : (st.error || 'Modelle werden geladen …');
   const mt = $('#mtab');
   if (mt) { mt.innerHTML = ''; st.models.forEach(m => mt.append(el('tr', null, el('td', null, m.title), el('td', {class: 'muted small'}, (m.size / 1048576).toFixed(1) + ' MB · ' + m.license),

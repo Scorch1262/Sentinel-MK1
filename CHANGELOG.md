@@ -1,5 +1,18 @@
 # Änderungen
 
+## 1.4.0
+- Deutlich bessere Objekterkennung: neues Modell YOLOX-S (640 px, Standard auf der
+  Jetson-GPU) und YOLOX-Tiny; NanoDet bleibt für den Brume 2
+- Zweitprüfung: neue Objekte werden im vergrößerten Ausschnitt nochmals geprüft –
+  Schatten, Spiegelungen und Muster fallen dabei heraus
+- Mindest-Sicherheit je Gruppe (Personen standardmäßig 55 %), Formprüfung für
+  Personen (breite, flache Treffer wie Schatten werden verworfen)
+- „Fehlerkennung“ lernen: falsche Treffer in der Galerie oder ganze Objekte markieren –
+  an derselben Stelle wird so etwas künftig nicht mehr gemeldet (Liste unter Einstellungen)
+- Sichtung erst nach 3 Treffern in Folge; Live-Bild zeigt nur bestätigte Objekte
+- Bestehende Einstellungen werden automatisch auf die strengeren Werte angehoben
+- Kästchen in den Einstellungen einheitlich groß
+
 ## 1.3.0
 - Lüftersteuerung für den Jetson Nano (4-Pin-PWM-Anschluss): Sentinel regelt den
   Lüfter nach der höchsten CPU/GPU-Temperatur (einstellbare Kurve mit Vorschau)

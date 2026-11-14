@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)

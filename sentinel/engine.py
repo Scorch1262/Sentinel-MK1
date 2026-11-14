@@ -11,8 +11,8 @@ import urllib.request
 import numpy as np
 
 from . import imaging, sysinfo, trt
-from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet
-from .models import ModelManager
+from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet, YoloX
+from .models import DETECTORS, ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
 from .streams import StreamWorker, decoder_info, find_ffmpeg
@@ -39,7 +39,8 @@ def fmt_dur(minutes):
 
 class Track:
     __slots__ = ("tid", "cls", "key", "box", "score", "hits", "first_ts", "last_ts", "confirmed", "obj",
-                 "last_save", "face_tries", "face_last", "has_face", "dets", "match", "named")
+                 "last_save", "face_tries", "face_last", "has_face", "dets", "match", "named", "rejected",
+                 "retry_at", "scores", "why")
 
     def __init__(self, tid, cls, box, score, ts):
         self.tid, self.cls, self.key = tid, cls, track_key(cls)
@@ -54,6 +55,10 @@ class Track:
         self.dets = []
         self.match = ""
         self.named = False
+        self.rejected = False      # von Fehlerkennungs-Filter oder Zweitpruefung verworfen
+        self.retry_at = 0.0
+        self.scores = [score]
+        self.why = ""
 
 
 class IdentityIndex:
@@ -187,7 +192,9 @@ class Engine:
         self.logbuf = collections.deque(maxlen=300)
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
         self.index = IdentityIndex(self.store)
-        self.models = ModelManager(os.path.join(self.data_dir, "models"), self.log)
+        self.models = ModelManager(os.path.join(self.data_dir, "models"), self.log, wanted=self.wanted_models)
+        self.fp_cache = None        # gelernte Fehlerkennungen (Liste), None = neu laden
+        self.stats = dict(rejected_fp=0, rejected_verify=0, rejected_shape=0)
         self.mqtt = MqttSender()
         self.workers = {}
         self.tracks = {}            # stream_id -> [Track]
@@ -251,6 +258,16 @@ class Engine:
             self.log("ffmpeg-Installation fehlgeschlagen: %s" % e)
         self.log("ffmpeg %s" % ("installiert" if find_ffmpeg() else "weiterhin nicht verfuegbar"))
 
+    def detector_choice(self):
+        """Gewaehltes Erkennungsmodell; 'auto' = YOLOX-S auf Jetson-GPU, sonst NanoDet."""
+        m = self.cfg.get("detection").get("model", "auto")
+        if m not in DETECTORS:
+            m = "yolox_s" if self.use_gpu() else "nanodet"
+        return m
+
+    def wanted_models(self):
+        return [DETECTORS[self.detector_choice()]["key"], "face_det", "face_rec"]
+
     def use_gpu(self):
         """GPU (TensorRT) verwenden? Einstellung detection.accel: auto | gpu | cpu"""
         acc = self.cfg.get("detection").get("accel", "auto")
@@ -264,22 +281,46 @@ class Engine:
                 gpu = self.use_gpu()
                 if gpu and self.models.all_ok() and any(not self.models.engine_ok(k) and
                                                         self.models.engine_state.get(k) != "fehler"
-                                                        for k in self.models.ENGINES):
+                                                        for k in self.models.ENGINES if k in self.wanted_models()):
                     # Engines fehlen: einmalig bauen, bis dahin auf der CPU rechnen
                     self.models.build_engines(on_done=self.load_models)
-                if self.models.state["detector"] == "ok":
+                choice = self.detector_choice()
+                spec = DETECTORS[choice]
+                key = spec["key"]
+                if self.models.state.get(key) == "ok":
                     t = time.time()
-                    eng = self.models.engine_path("detector") if gpu and self.models.engine_ok("detector") else None
-                    try:
-                        det = NanoDet(self.models.path("detector"), int(d.get("model_size", 320)), use_cv2, engine=eng)
-                    except Exception as e:
-                        if not eng:
-                            raise
-                        self.log("TensorRT-Objekterkennung nicht ladbar (%s) - nutze CPU" % e)
-                        det = NanoDet(self.models.path("detector"), int(d.get("model_size", 320)), use_cv2)
+                    det = None
+                    eng = self.models.engine_path(key) if gpu and self.models.engine_ok(key) else None
+                    if gpu and not eng and key != "detector" and self.models.engine_ok("detector") \
+                            and self.models.ok("detector", quick=True):
+                        # Engine des gewaehlten Modells wird noch gebaut: so lange NanoDet auf der GPU
+                        try:
+                            det = NanoDet(self.models.path("detector"), 416, False,
+                                          engine=self.models.engine_path("detector"))
+                            self.log("Übergangsweise NanoDet (GPU), bis die %s-Engine fertig ist" % spec["title"])
+                        except Exception:
+                            det = None
+                    if det is None:
+                        try:
+                            if spec["kind"] == "yolox":
+                                det = YoloX(self.models.path(key), spec["input"], engine=eng, title=spec["title"])
+                            else:
+                                det = NanoDet(self.models.path(key), int(d.get("model_size", 320)), use_cv2, engine=eng)
+                        except Exception as e:
+                            if not eng:
+                                raise
+                            self.log("TensorRT-Erkennung nicht ladbar (%s) - nutze CPU" % e)
+                            det = (YoloX(self.models.path(key), spec["input"], title=spec["title"])
+                                   if spec["kind"] == "yolox" else
+                                   NanoDet(self.models.path(key), int(d.get("model_size", 320)), use_cv2))
+                    det.model_title = getattr(det, "title", None) or "NanoDet-Plus"
+                    if isinstance(det, NanoDet):
+                        det.model_title = "NanoDet-Plus"
                     self.det = det
-                    self.log("Objekterkennung bereit (%s, %d px, %.1f s)" % (self.det.backend, self.det.size,
-                                                                            time.time() - t))
+                    self.log("Objekterkennung bereit: %s (%s, %d px, %.1f s)" % (det.model_title, det.backend,
+                                                                                det.size, time.time() - t))
+                elif not self.models.busy:
+                    self.models.ensure(on_done=self.load_models)
                 if self.models.state["face_det"] == "ok":
                     rec = self.models.path("face_rec") if self.models.state["face_rec"] == "ok" else None
                     eng = self.models.engine_path("face_rec") if rec and gpu and self.models.engine_ok("face_rec") else None
@@ -404,16 +445,123 @@ class Engine:
         self.last_gray[w.id] = gray
         self.last_full[w.id] = now
         t0 = time.time()
+        thr = self._thresholds(d)
         with self.det_lock:
-            dets = self.det.detect(frame, float(d.get("threshold", 0.45)), allowed=self._allowed()) if self.det else []
+            dets = self.det.detect(frame, min(thr.values()), allowed=self._allowed()) if self.det else []
         self.det_ms.append((time.time() - t0) * 1000)
-        minpx = float(d.get("min_box_px", 24))
-        dets = [x for x in dets if (x[2] - x[0]) >= minpx * 0.5 and (x[3] - x[1]) >= minpx]
+        dets = self._plausible(dets, thr, d, W, H)
         self._update_tracks(w, tracks, dets, frame, idx, now, d)
         jpg = w.jpeg_for(idx)
         if jpg:
             self.analyzed[w.id] = (now, jpg)
         self._publish_live(w.id, W, H, tracks, now)
+
+    def _thresholds(self, d):
+        """Mindest-Sicherheit je Gruppe (person/animal/vehicle/...); Grundwert fuer alle anderen."""
+        base = float(d.get("threshold", 0.5))
+        out = {g["id"]: base for g in GROUPS}
+        for k, v in (d.get("group_thresholds") or {}).items():
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    def _plausible(self, dets, thr, d, W, H):
+        """Unplausible Treffer verwerfen: zu klein, zu unsicher fuer die Gruppe, falsche Form."""
+        minpx = float(d.get("min_box_px", 24))
+        asp = float(d.get("person_min_aspect", 0.9))
+        out = []
+        for x in dets:
+            bw, bh = x[2] - x[0], x[3] - x[1]
+            cls = COCO[x[5]]
+            g = CLASS_GROUP.get(cls, {"id": "other"})["id"]
+            if x[4] < thr.get(g, thr.get("other", 0.5)):
+                continue
+            if bh < minpx or bw < minpx * 0.4:
+                continue
+            if cls == "person" and asp > 0 and bh < bw * asp and x[4] < 0.8:
+                # Schatten, Spiegelungen, liegende Formen: breiter als hoch -> nur sehr sichere Treffer
+                self.stats["rejected_shape"] += 1
+                continue
+            if bw * bh > 0.85 * W * H:
+                continue                           # ganzes Bild als Objekt: fast immer Fehltreffer
+            out.append(x)
+        return out
+
+    # ------------------------------------------------------------------
+    # Gelernte Fehlerkennungen + Zweitpruefung
+    # ------------------------------------------------------------------
+    def false_positives(self):
+        if self.fp_cache is None:
+            rows = self.store.q("SELECT id, stream_id, ckey, x1, y1, x2, y2, app FROM false_pos")
+            for r in rows:
+                r["app"] = blob_vec(r["app"])
+            self.fp_cache = rows
+        return self.fp_cache
+
+    def _is_known_false(self, sid, t, frame):
+        W, H = frame.shape[1], frame.shape[0]
+        box = (t.box[0] / W, t.box[1] / H, t.box[2] / W, t.box[3] / H)
+        app = None
+        for fp in self.false_positives():
+            if fp["stream_id"] != sid or fp["ckey"] != t.key:
+                continue
+            v = iou(box, (fp["x1"], fp["y1"], fp["x2"], fp["y2"]))
+            if v >= 0.5:
+                return True
+            if v >= 0.2 and fp["app"] is not None:
+                if app is None:
+                    crop, _ = imaging.crop(frame, t.box)
+                    app = imaging.appearance(crop) if crop is not None else None
+                if app is not None and float(np.dot(app, fp["app"])) >= 0.88:
+                    return True
+        return False
+
+    def _verify(self, frame, t, d):
+        """Zweitpruefung: Ausschnitt um das Objekt vergroessert erneut erkennen lassen.
+        Schatten, Muster und Spiegelungen fallen dabei meist durch."""
+        H, W = frame.shape[:2]
+        x1, y1, x2, y2 = t.box
+        bw, bh = x2 - x1, y2 - y1
+        side = max(bw, bh) * 2.2
+        side = max(side, min(W, H) * 0.35)
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        rx1, ry1 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+        rx2, ry2 = int(min(W, cx + side / 2)), int(min(H, cy + side / 2))
+        if rx2 - rx1 < 16 or ry2 - ry1 < 16:
+            return True
+        # Ausschnitt deckt fast das ganze Bild ab: bringt nichts Neues
+        if (rx2 - rx1) * (ry2 - ry1) > 0.8 * W * H:
+            return True
+        sub = frame[ry1:ry2, rx1:rx2]
+        g = CLASS_GROUP.get(t.cls, {"id": "other"})["id"]
+        need = self._thresholds(d).get(g, 0.5) + float(d.get("verify_margin", 0.05))
+        with self.det_lock:
+            res = self.det.detect(np.ascontiguousarray(sub), max(0.2, need - 0.2), allowed=self._allowed())
+        lb = (x1 - rx1, y1 - ry1, x2 - rx1, y2 - ry1)
+        for r in res:
+            if track_key(COCO[r[5]]) == t.key and r[4] >= need and iou(lb, r[:4]) >= 0.35:
+                return True
+        return False
+
+    def _accept(self, w, t, frame, now, d):
+        """Darf eine Spur zur Sichtung werden? (Fehlerkennungs-Filter, Zweitpruefung)"""
+        if self._is_known_false(w.id, t, frame):
+            t.rejected, t.why = True, "gelernte Fehlerkennung"
+            self.stats["rejected_fp"] += 1
+            return False
+        mean = sum(t.scores[-5:]) / float(len(t.scores[-5:]))
+        g = CLASS_GROUP.get(t.cls, {"id": "other"})["id"]
+        if mean < self._thresholds(d).get(g, 0.5):
+            return False
+        if d.get("verify", True) and self.det is not None:
+            if not self._verify(frame, t, d):
+                t.rejected, t.why = True, "Zweitprüfung"
+                t.retry_at = now + float(d.get("verify_retry_s", 20))
+                self.stats["rejected_verify"] += 1
+                return False
+        return True
 
     def _update_tracks(self, w, tracks, dets, frame, idx, now, d):
         timeout = max(float(d.get("track_timeout_s", 6.0)), 3 * float(d.get("interval_s", 1.0)))
@@ -443,6 +591,9 @@ class Engine:
             used_d.add(di)
             t, x = tracks[ti], dets[di]
             t.box, t.score = tuple(x[:4]), x[4]
+            t.scores.append(x[4])
+            if len(t.scores) > 10:
+                del t.scores[0]
             t.hits += 1
             t.last_ts = now
         for di, x in enumerate(dets):
@@ -460,6 +611,13 @@ class Engine:
                 self.seen[(w.id, t.obj)] = now
             try:
                 if not t.confirmed and t.hits >= min_hits:
+                    if t.rejected:
+                        if t.why == "Zweitprüfung" and now >= t.retry_at:
+                            t.rejected, t.why = False, ""       # erneut pruefen (z. B. Person kommt naeher)
+                        else:
+                            continue
+                    if not self._accept(w, t, frame, now, d):
+                        continue
                     t.confirmed = True
                     self._new_sighting(w, t, frame, idx, now)
                 elif t.confirmed:
@@ -677,6 +835,8 @@ class Engine:
                 names[o["id"]] = o
         boxes = []
         for t in tracks:
+            if t.rejected or not t.confirmed:
+                continue                      # unbestaetigte/verworfene Treffer nicht anzeigen
             g = CLASS_GROUP.get(t.cls)
             o = names.get(t.obj)
             label = DE.get(t.cls, t.cls)
@@ -736,6 +896,42 @@ class Engine:
         if self.store.q("SELECT avatar_det FROM objects WHERE id=?", (target,), one=True)["avatar_det"] is None:
             self._set_avatar(target, rows[0]["id"])
         return target
+
+    def mark_false(self, det_ids):
+        """Bilder als Fehlerkennung lernen: Ort + Aussehen merken (je Stream), Bilder loeschen.
+        Kuenftige Treffer an derselben Stelle mit aehnlichem Aussehen werden nicht mehr gemeldet."""
+        rows = self.store.q("SELECT * FROM detections WHERE id IN (%s)" % ",".join(str(int(i)) for i in det_ids))
+        fdir = os.path.join(self.data_dir, "falsepos")
+        os.makedirs(fdir, exist_ok=True)
+        objs = set()
+        now = time.time()
+        for r in rows:
+            crop_rel = None
+            if r["crop"] and os.path.exists(os.path.join(self.snap_dir, r["crop"])):
+                crop_rel = "fp_%d.png" % r["id"]
+                shutil.copyfile(os.path.join(self.snap_dir, r["crop"]), os.path.join(fdir, crop_rel))
+            self.store.x("INSERT INTO false_pos(ts, stream_id, stream_name, cls, ckey, x1, y1, x2, y2, app, crop) "
+                         "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                         (now, r["stream_id"], r["stream_name"], r["cls"], track_key(r["cls"]), r["x1"], r["y1"],
+                          r["x2"], r["y2"], r["app"], crop_rel))
+            if r["object_id"]:
+                objs.add(r["object_id"])
+            # laufende Spur sofort ausblenden
+            for t in self.tracks.get(r["stream_id"], []):
+                if r["id"] in t.dets:
+                    t.rejected, t.why, t.confirmed = True, "gelernte Fehlerkennung", False
+            self.delete_detection(r["id"], recount=False)
+        self.fp_cache = None
+        for oid in objs:
+            left = self.store.q("SELECT COUNT(*) n FROM detections WHERE object_id=?", (oid,), one=True)["n"]
+            o = self.store.q("SELECT name, category_id FROM objects WHERE id=?", (oid,), one=True)
+            if left == 0 and o and not o["name"] and not o["category_id"]:
+                self.delete_object(oid, delete_detections=False)
+            elif o:
+                self.recount(oid)
+                self.index.reload_obj(oid)
+        self.log("%d Bild(er) als Fehlerkennung gelernt" % len(rows))
+        return len(rows)
 
     def merge_objects(self, src, dst):
         src, dst = int(src), int(dst)
@@ -1054,6 +1250,9 @@ class Engine:
                     update=self.updater.public() if self.updater else None,
                     fan=self.fan.status() if self.fan else dict(available=False), face_gpu=bool(self.faces and self.faces.gpu),
                     backend=self.det.backend if self.det else "", model_size=self.det.size if self.det else 0,
+                    model_title=getattr(self.det, "model_title", "") if self.det else "",
+                    model_choice=self.detector_choice(), filter_stats=dict(self.stats),
+                    false_count=len(self.false_positives()),
                     det_ms=round(sum(dm) / len(dm)) if dm else None,
                     face_ms=round(sum(fm) / len(fm)) if fm else None, ffmpeg=bool(find_ffmpeg()),
                     error=self.engine_error, load=load, unack=unack, alarm_seq=self.alarm_seq,

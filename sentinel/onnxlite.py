@@ -414,6 +414,19 @@ class OnnxModel:
                     shp = shp[:-2] + [self._sp(shp[-2]), self._sp(shp[-1])]
                 shp = [full[i] if s == 0 else s for i, s in enumerate(shp)]
                 y = x.reshape(full).reshape(shp)[0]
+            elif op == "Slice":
+                full = x[None]
+                starts = [int(v) for v in np.ravel(ins[1])]
+                ends = [int(v) for v in np.ravel(ins[2])]
+                axes = [int(v) for v in np.ravel(ins[3])] if len(ins) > 3 and ins[3] is not None else list(range(len(starts)))
+                steps = [int(v) for v in np.ravel(ins[4])] if len(ins) > 4 and ins[4] is not None else [1] * len(starts)
+                sl = [slice(None)] * full.ndim
+                for st, en, ax, sp in zip(starts, ends, axes, steps):
+                    ax = ax % full.ndim
+                    dim = full.shape[ax]
+                    en = max(min(en, dim), -dim - 1) if en < 0 or en > dim else en
+                    sl[ax] = slice(st, en, sp)
+                y = full[tuple(sl)][0]
             elif op == "Flatten":
                 y = x.reshape(-1)
             elif op == "Transpose":

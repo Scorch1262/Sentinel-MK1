@@ -21,4 +21,5 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Die KI-Modelle werden nicht mitgeliefert, sondern beim Installieren aus dem
-OpenCV Model Zoo geladen: NanoDet-Plus (Apache-2.0), YuNet (MIT), SFace (Apache-2.0).
+OpenCV Model Zoo bzw. den YOLOX-Releases geladen: NanoDet-Plus (Apache-2.0),
+YOLOX (Apache-2.0), YuNet (MIT), SFace (Apache-2.0).

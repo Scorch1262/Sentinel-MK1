@@ -5,15 +5,22 @@ import os
 import threading
 
 DEFAULTS = {
+    "config_version": 2,
     "server": {"host": "0.0.0.0", "port": 8096},
     "streams": [],
     "detection": {
         "enabled": True,
-        "model_size": 320,          # 320 = schnell (Brume 2), 416 = genauer
-        "threshold": 0.45,
+        "model": "auto",            # auto | nanodet | yolox_tiny | yolox_s  (auto: Jetson-GPU -> yolox_s)
+        "model_size": 320,          # nur NanoDet: 320 = schnell (Brume 2), 416 = genauer
+        "threshold": 0.5,           # Grundschwelle
+        "group_thresholds": {"person": 0.55},   # strengere Schwellen je Gruppe
+        "person_min_aspect": 0.9,   # Person muss mindestens 0,9x so hoch wie breit sein (gegen Schatten)
+        "verify": True,             # Zweitpruefung neuer Objekte im vergroesserten Ausschnitt
+        "verify_margin": 0.05,
+        "verify_retry_s": 20,
         "groups": ["person", "animal", "vehicle", "bike"],
         "extra_classes": [],
-        "min_hits": 2,              # so oft hintereinander erkannt, bis eine Sichtung zaehlt
+        "min_hits": 3,              # so oft hintereinander erkannt, bis eine Sichtung zaehlt
         "interval_s": 1.0,          # Mindestabstand zwischen zwei Analysen je Stream
         "motion_gate": True,        # ohne Bewegung keine (teure) Analyse
         "motion_level": 2.5,
@@ -54,6 +61,26 @@ def _merge(base, over):
     return out
 
 
+CONFIG_VERSION = 2
+
+
+def migrate(data):
+    """Aeltere config.json anheben (v1.4.0: strengere Erkennung). Gibt True zurueck, wenn geaendert."""
+    v = int(data.get("config_version", 1) or 1)
+    if v >= CONFIG_VERSION:
+        return False
+    d = data.setdefault("detection", {})
+    if v < 2:
+        d["threshold"] = max(float(d.get("threshold", 0.5) or 0.5), 0.5)
+        d.setdefault("group_thresholds", {"person": 0.55})
+        d["min_hits"] = max(int(d.get("min_hits", 3) or 3), 3)
+        d.setdefault("verify", True)
+        d.setdefault("person_min_aspect", 0.9)
+        d.setdefault("model", "auto")
+    data["config_version"] = CONFIG_VERSION
+    return True
+
+
 class Config:
     def __init__(self, path, first_run=None):
         self.path = path
@@ -68,7 +95,10 @@ class Config:
         if os.path.exists(self.path):
             try:
                 raw = open(self.path, "rb").read().decode("utf-8-sig")
-                self.data = _merge(DEFAULTS, json.loads(raw))
+                loaded = json.loads(raw)
+                if migrate(loaded):
+                    print("config.json auf Version %d angehoben (strengere Objekterkennung)" % CONFIG_VERSION)
+                self.data = _merge(DEFAULTS, loaded)
             except Exception as e:
                 bad = self.path + ".defekt"
                 try:

@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 1.3.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 1.4.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -233,6 +233,29 @@ identisch zu onnxruntime). Richtwerte:
   Bei vielen Kameras „nur Keyframes“ aktivieren – das spart beim Dekodieren am meisten.
 - Modellgröße 416 px ist genauer, braucht aber ca. 1,7× so lange.
 
+## Erkennungsqualität
+
+| Modell | Eingang | Genauigkeit (COCO mAP) | empfohlen für |
+|---|---|---|---|
+| **YOLOX-S** | 640 px | 40,5 | Jetson-GPU (Standard dort) |
+| YOLOX-Tiny | 416 px | 32,8 | Jetson ohne GPU-Engine, schnelle PCs |
+| NanoDet-Plus | 320/416 px | 30,4 | GL.iNet Brume 2 (Standard dort) |
+
+Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen zusammen:
+
+1. **Mindest-Sicherheit je Gruppe** – Personen standardmäßig 55 %, andere 50 %.
+2. **Formprüfung** – eine Person muss mindestens 0,9× so hoch wie breit sein. Flache Treffer wie
+   Schatten zählen nur bei sehr hoher Sicherheit.
+3. **3 Treffer in Folge** und ein ausreichender Mittelwert, bevor etwas als Sichtung gilt.
+4. **Zweitprüfung** – der Bereich um ein neues Objekt wird vergrößert ein zweites Mal analysiert;
+   Schatten, Spiegelungen und Muster bestehen das meist nicht.
+5. **Gelernte Fehlerkennungen** – in der Galerie bei einem falschen Treffer **„Fehlerkennung“**
+   (oder beim Objekt „Ist Fehlerkennung“) wählen. Sentinel merkt sich Ort und Aussehen je Stream
+   und meldet dort so etwas nicht mehr. Liste und Löschen unter Einstellungen.
+
+Im Live-Bild erscheinen nur noch bestätigte Objekte. Unter Einstellungen → Objekterkennung zeigt
+„Verworfen“, wie oft jede Stufe seit dem Start eingegriffen hat.
+
 ## Wie die Wiedererkennung funktioniert
 
 1. Ein Objekt zählt als **Sichtung**, sobald es mehrmals hintereinander erkannt wurde
@@ -299,5 +322,5 @@ Aufbewahrungsdauer (Einstellungen → Speicher) knapp halten.
 ## Lizenz
 
 MIT (siehe `LICENSE`). KI-Modelle aus dem [OpenCV Model Zoo](https://github.com/opencv/opencv_zoo):
-NanoDet-Plus (Apache-2.0), YuNet (MIT), SFace (Apache-2.0) – werden bei der Installation geladen,
+NanoDet-Plus (Apache-2.0), YOLOX (Apache-2.0, Megvii), YuNet (MIT), SFace (Apache-2.0) – werden bei der Installation geladen,
 nicht mitgeliefert.
