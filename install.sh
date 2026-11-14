@@ -17,7 +17,7 @@
 #  Kompatibel mit dem Netzwerk-Core MK1 (Startdatei "@install.sh", ID "sentinel").
 #  config.json und data/ (Datenbank, Bilder, Modelle) bleiben bei Updates erhalten.
 # ============================================================================
-VERSION=1.2.2
+VERSION=1.3.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/root/Sentinel-MK1}
 PORT=""

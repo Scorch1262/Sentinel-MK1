@@ -38,6 +38,9 @@ DEFAULTS = {
              "prefix": "sentinel", "publish_detections": False},
     "ui": {"sound": True, "repeat_list_min": 2, "live_mode": "live"},
     "update": {"repo": "Scorch1262/Sentinel-MK1", "branch": "main", "auto_check": True},
+    # Luefter (nur Jetson): auto = Sentinel-Kurve, kernel = Jetson-Standard, fixed = fest, max = voll
+    "fan": {"mode": "auto", "off_temp": 32, "min_temp": 38, "max_temp": 62, "min_pwm": 80, "max_pwm": 255,
+            "fixed_pct": 60, "emergency_temp": 75, "interval_s": 2.0, "kickstart": True},
 }
 
 

@@ -1,5 +1,12 @@
 # Änderungen
 
+## 1.3.0
+- Lüftersteuerung für den Jetson Nano (4-Pin-PWM-Anschluss): Sentinel regelt den
+  Lüfter nach der höchsten CPU/GPU-Temperatur (einstellbare Kurve mit Vorschau)
+- Betriebsarten: Sentinel-Kurve, Jetson-Standard, feste Drehzahl, volle Drehzahl
+- Notbetrieb ab 75 °C, Anlaufhilfe für träge 5-V-Lüfter, sanftes Herunterregeln
+- Lüfter-Drehzahl in der Kopfzeile; beim Beenden übernimmt wieder der Jetson
+
 ## 1.2.2
 - Kamerabilder auf dem Jetson: MJPEG-Kameras laufen automatisch über ffmpeg
   (Hardware-Dekoder nur für H.264/H.265), statt mit „not-linked“ abzubrechen

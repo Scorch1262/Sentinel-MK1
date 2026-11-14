@@ -106,6 +106,9 @@ async function pollState() {
     if (st.sys && st.sys.gpu != null) h.append(el('span', null, 'GPU ', el('b', null, st.sys.gpu + ' %')));
     if (st.load) h.append(el('span', null, 'Last ', el('b', null, st.load[0])));
     if (st.sys && st.sys.temp != null) h.append(el('span', null, el('b', {style: {color: st.sys.temp >= 80 ? 'var(--danger)' : ''}}, st.sys.temp + ' °C')));
+    if (st.fan && st.fan.available && st.fan.pct != null) h.append(el('span', {title: 'Lüfter' + (st.fan.rpm ? ' ' + st.fan.rpm + ' U/min' : '')},
+      el('span', {class: 'fan-ico' + (st.fan.pct > 0 ? ' spin' : ''), style: {animationDuration: (st.fan.pct > 0 ? Math.max(0.25, 1.6 - st.fan.pct / 70) : 0) + 's'}}, '✲'),
+      ' Lüfter ', el('b', null, st.fan.pct + ' %')));
     if (st.sys && st.sys.mem_total) h.append(el('span', null, 'RAM ', el('b', null, (st.sys.mem_used / 1024).toFixed(1) + '/' + (st.sys.mem_total / 1024).toFixed(1) + ' GB')));
     h.append(el('span', {class: 'clock'}, el('b', null, st.time_text)));
     if (st.update && (st.update.available || st.update.busy)) h.prepend(el('button', {class: 'btn-mini on', onclick: () => { showTab('settings'); setTimeout(() => { const u = $('#updPanel'); if (u) u.scrollIntoView({behavior: 'smooth'}); }, 400); }},
@@ -801,8 +804,72 @@ async function loadSettings() {
     el('div', {class: 'actions'}, el('button', {class: 'btn-mini', onclick: async () => { await api('/api/models/download', {body: {}}); toast('Download gestartet'); }}, 'Fehlende Modelle laden'),
       el('button', {class: 'btn-mini', onclick: async () => { if (!confirm('Sentinel neu starten?')) return; await api('/api/restart', {body: {}}); toast('Neustart …'); }}, 'Neu starten')),
     el('h4', null, 'Protokoll'), lg));
+  if (S.state.fan && S.state.fan.available) box.append(fanPanel());
   box.append(updatePanel());
   updateSettingsStatus();
+}
+/* Luefter (Jetson) */
+function fanCurveSvg(F) {
+  const W = 360, H = 150, x0 = 34, y0 = 10, w = W - x0 - 10, h = H - y0 - 24, tMin = 20, tMax = 85;
+  const X = t => x0 + (Math.min(tMax, Math.max(tMin, t)) - tMin) / (tMax - tMin) * w;
+  const Y = p => y0 + h - p / 255 * h;
+  const pts = [[tMin, 0], [F.off_temp, 0], [F.min_temp, 0], [F.min_temp, F.min_pwm], [F.max_temp, F.max_pwm], [F.emergency_temp, F.max_pwm], [F.emergency_temp, 255], [tMax, 255]];
+  const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.style.width = '100%'; svg.style.maxWidth = W + 'px';
+  const add = (tag, a, txt) => { const e = document.createElementNS(ns, tag); for (const k in a) e.setAttribute(k, a[k]); if (txt) e.textContent = txt; svg.append(e); return e; };
+  for (let t = 30; t <= 80; t += 10) { add('line', {x1: X(t), x2: X(t), y1: y0, y2: y0 + h, stroke: '#242a33'}); add('text', {x: X(t), y: H - 8, fill: '#8891a0', 'font-size': 10, 'text-anchor': 'middle', 'font-family': 'monospace'}, t + '°'); }
+  [0, 50, 100].forEach(p => { add('line', {x1: x0, x2: x0 + w, y1: Y(p * 2.55), y2: Y(p * 2.55), stroke: '#242a33'}); add('text', {x: x0 - 4, y: Y(p * 2.55) + 3, fill: '#8891a0', 'font-size': 10, 'text-anchor': 'end', 'font-family': 'monospace'}, p + '%'); });
+  add('polyline', {points: pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' '), fill: 'none', stroke: '#ff9142', 'stroke-width': 2});
+  add('line', {x1: X(F.off_temp), x2: X(F.min_temp), y1: Y(F.min_pwm), y2: Y(F.min_pwm), stroke: '#3ddc97', 'stroke-dasharray': '3 3', 'stroke-width': 1.5});
+  const st = S.state.fan;
+  if (st && st.temp != null) {
+    add('line', {x1: X(st.temp), x2: X(st.temp), y1: y0, y2: y0 + h, stroke: '#4aa3ff', 'stroke-dasharray': '2 3'});
+    add('circle', {cx: X(st.temp), cy: Y(st.pwm || 0), r: 4.5, fill: '#4aa3ff'});
+  }
+  return svg;
+}
+function fanPanel() {
+  const F = Object.assign({mode: 'auto', off_temp: 32, min_temp: 38, max_temp: 62, min_pwm: 80, max_pwm: 255, fixed_pct: 60, emergency_temp: 75, kickstart: true}, S.cfg.fan || {});
+  const mode = el('select', null, el('option', {value: 'auto'}, 'Automatisch – Sentinel-Kurve (empfohlen)'), el('option', {value: 'kernel'}, 'Jetson-Standardregelung'),
+    el('option', {value: 'fixed'}, 'Feste Drehzahl'), el('option', {value: 'max'}, 'Immer volle Drehzahl')); mode.value = F.mode;
+  const offT = numIn(F.off_temp, {min: 20, max: 80}), minT = numIn(F.min_temp, {min: 20, max: 80}), maxT = numIn(F.max_temp, {min: 25, max: 90});
+  const minP = numIn(Math.round(F.min_pwm / 2.55), {min: 10, max: 100}), maxP = numIn(Math.round(F.max_pwm / 2.55), {min: 20, max: 100});
+  const emT = numIn(F.emergency_temp, {min: 50, max: 95}), fix = numIn(F.fixed_pct, {min: 0, max: 100}), kick = el('input', {type: 'checkbox', checked: F.kickstart !== false});
+  const prev = el('div', {id: 'fanCurve', style: {marginTop: '6px'}});
+  const cur = () => ({mode: mode.value, off_temp: +offT.value, min_temp: +minT.value, max_temp: +maxT.value, min_pwm: Math.round(+minP.value * 2.55),
+    max_pwm: Math.round(+maxP.value * 2.55), emergency_temp: +emT.value, fixed_pct: +fix.value, kickstart: kick.checked});
+  const redraw = () => { prev.innerHTML = ''; prev.append(fanCurveSvg(cur()));
+    $$('.fan-auto').forEach(e => e.style.display = mode.value === 'auto' ? '' : 'none'); $$('.fan-fix').forEach(e => e.style.display = mode.value === 'fixed' ? '' : 'none'); };
+  [offT, minT, maxT, minP, maxP, emT, fix, mode].forEach(i => i.addEventListener('input', redraw));
+  const st = S.state.fan;
+  const p = el('div', {class: 'panel', id: 'fanPanel'}, el('h3', null, 'Lüfter'),
+    el('div', {class: 'form'},
+      el('label', null, 'Jetzt'), el('span', {class: 'mono', id: 'fanNow'}),
+      el('label', null, 'Betriebsart'), mode,
+      el('label', {class: 'fan-auto'}, 'Aus unter'), el('div', {class: 'fan-auto'}, offT, ' °C'),
+      el('label', {class: 'fan-auto'}, 'Start bei'), el('div', {class: 'fan-auto'}, minT, ' °C mit ', minP, ' %'),
+      el('label', {class: 'fan-auto'}, 'Voll bei'), el('div', {class: 'fan-auto'}, maxT, ' °C mit ', maxP, ' %'),
+      el('label', {class: 'fan-auto'}, 'Notbetrieb ab'), el('div', {class: 'fan-auto'}, emT, ' °C immer 100 %'),
+      el('label', {class: 'fan-fix'}, 'Feste Drehzahl'), el('div', {class: 'fan-fix'}, fix, ' %'),
+      el('label', null, 'Anlaufhilfe'), el('label', {class: 'chk'}, kick, 'beim Einschalten 1 s voll anlaufen lassen'),
+      el('label', {class: 'fan-auto'}, 'Kurve'), el('div', {class: 'fan-auto'}, prev,
+        el('div', {class: 'muted small'}, 'orange = Drehzahl je Temperatur · grün gestrichelt = Nachlauf bis „Aus unter“ · blau = jetzt'))),
+    st.conflict ? el('p', {class: 'small', style: {color: 'var(--accent)'}}, 'Hinweis: NVIDIAs Dienst nvfancontrol läuft ebenfalls – Betriebsart „Jetson-Standardregelung“ wählen oder nvfancontrol abschalten.') : null,
+    el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => saveSection('fan', cur(), 'Lüfter-Einstellungen gespeichert')}, 'Speichern'),
+      el('button', {class: 'btn btn-ghost', onclick: () => { offT.value = 32; minT.value = 38; maxT.value = 62; minP.value = 31; maxP.value = 100; emT.value = 75; mode.value = 'auto'; redraw(); }}, 'Standardwerte')),
+    el('p', {class: 'muted small', style: {marginBottom: 0}}, 'Regelt den Lüfter am 4-Pin-Anschluss des Jetson nach der höchsten CPU/GPU-Temperatur. Beim Beenden von Sentinel übernimmt wieder die Jetson-Standardregelung.'));
+  S.fanRedraw = redraw;
+  setTimeout(redraw, 0);
+  return p;
+}
+function renderFan() {
+  const st = S.state && S.state.fan, n = $('#fanNow'); if (!st || !n) return;
+  const t = st.temps || {};
+  n.textContent = (st.pct != null ? st.pct + ' %' : '–') + (st.rpm ? ' · ' + st.rpm + ' U/min' : '') + ' · ' + (st.temp != null ? st.temp + ' °C' : '–') +
+    (Object.keys(t).length ? '  (' + Object.keys(t).filter(k => !/fan-est/i.test(k)).map(k => k.replace(/-therm/i, '') + ' ' + Math.round(t[k]) + '°').join(', ') + ')' : '');
+  n.style.color = st.error ? 'var(--danger)' : '';
+  if (st.error) n.textContent += ' · ' + st.error;
+  if ($('#fanCurve') && S.fanRedraw) S.fanRedraw();
 }
 /* Updates von GitHub */
 function updatePanel() {
@@ -853,6 +920,7 @@ function renderUpdate() {
 }
 async function updateSettingsStatus() {
   renderUpdate();
+  renderFan();
   const st = S.state; if (!st) return;
   const ai = $('#sysAi');
   if (ai) ai.textContent = st.models_ready ? st.backend + ' · ' + st.model_size + ' px · ' + (st.det_ms != null ? st.det_ms + ' ms/Bild' : '–') +

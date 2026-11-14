@@ -231,7 +231,7 @@ class Api:
         e = self.e
         if path == "/api/config":
             sec, vals = body.get("section"), body.get("values")
-            if sec not in ("detection", "identity", "storage", "mqtt", "ui", "server", "update"):
+            if sec not in ("detection", "identity", "storage", "mqtt", "ui", "server", "update", "fan"):
                 raise ValueError("Bereich unbekannt")
             if sec == "mqtt" and vals.get("password") == "********":
                 vals.pop("password")

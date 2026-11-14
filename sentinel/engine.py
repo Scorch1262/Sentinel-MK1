@@ -210,6 +210,7 @@ class Engine:
         self.lock = threading.RLock()
         self.started = time.time()
         self.updater = None          # wird von app.py gesetzt
+        self.fan = None              # Luefterregelung (nur Jetson)
 
     # ------------------------------------------------------------------
     def log(self, msg):
@@ -223,6 +224,13 @@ class Engine:
             self.log("WARNUNG: ffmpeg fehlt - auf dem Brume: opkg update && opkg install ffmpeg")
             if shutil.which("opkg") and hasattr(os, "geteuid") and os.geteuid() == 0:
                 threading.Thread(target=self._install_ffmpeg, daemon=True).start()
+        if sysinfo.is_jetson() or os.environ.get("SENTINEL_FAN_SYSFS"):
+            from .fan import FanController
+            self.fan = FanController(self.cfg, self.log)
+            if self.fan.available:
+                self.fan.start()
+            else:
+                self.log("Kein regelbarer Lüfter gefunden (/sys/devices/pwm-fan)")
         self.sync_streams()
         if self.models.all_ok():
             self.load_models()
@@ -1043,7 +1051,8 @@ class Engine:
                     gpu_available=bool(jet and trt.available()), trt_version=trt.trt_version() if jet else "",
                     engines=self.models.engines_info() if jet else [], building=self.models.building,
                     decoder=decoder_info(), sys=sysinfo.system_stats(),
-                    update=self.updater.public() if self.updater else None, face_gpu=bool(self.faces and self.faces.gpu),
+                    update=self.updater.public() if self.updater else None,
+                    fan=self.fan.status() if self.fan else dict(available=False), face_gpu=bool(self.faces and self.faces.gpu),
                     backend=self.det.backend if self.det else "", model_size=self.det.size if self.det else 0,
                     det_ms=round(sum(dm) / len(dm)) if dm else None,
                     face_ms=round(sum(fm) / len(fm)) if fm else None, ffmpeg=bool(find_ffmpeg()),
@@ -1053,6 +1062,8 @@ class Engine:
 
     def shutdown(self):
         self.stop_ev.set()
+        if self.fan is not None:
+            self.fan.stop()          # Regelung an den Jetson zurueckgeben
         for w in list(self.workers.values()):
             w.stop()
         self.store.close()

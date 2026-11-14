@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 1.2.2** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 1.3.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -101,6 +101,27 @@ sudo bash /tmp/install-jetson.sh
 | `sudo systemctl restart sentinel` | Neustart |
 
 `sh install.sh` erkennt einen Jetson ebenfalls und startet automatisch `install-jetson.sh`.
+
+### Lüfter
+
+Ist am 4-Pin-Lüfteranschluss des Jetson ein Lüfter angeschlossen, regelt Sentinel ihn selbst
+(**Einstellungen → Lüfter**). Die Jetson-Standardregelung startet den Lüfter erst spät; bei der
+Dauerlast durch die Objekterkennung wird das Modul sonst heiß und taktet herunter.
+
+| Einstellung | Standard |
+|---|---|
+| Aus unter | 32 °C (Lüfter läuft nach, bis die Temperatur darunter fällt) |
+| Start bei | 38 °C mit 31 % |
+| Voll bei | 62 °C mit 100 % |
+| Notbetrieb | ab 75 °C immer 100 % |
+
+- Maßgeblich ist die höchste Temperatur von CPU, GPU und der Schätzung des Jetson.
+- Weitere Betriebsarten: *Jetson-Standardregelung*, *feste Drehzahl*, *immer volle Drehzahl*.
+- **Anlaufhilfe:** viele 5-V-Lüfter starten bei kleinem Tastgrad nicht – sie laufen 1 s voll an.
+- Die Drehzahl wird in kleinen Schritten gesenkt (kein ständiges Auf und Ab).
+- Kopfzeile: Lüfter in % (U/min bei Lüftern mit Tachosignal). Beim Beenden von Sentinel übernimmt
+  wieder die Jetson-Standardregelung.
+- Mit `--maxtakt` setzt `jetson_clocks` den Lüfter beim Start kurz auf voll; danach regelt Sentinel.
 
 Die Kopfzeile zeigt auf dem Jetson zusätzlich GPU-Auslastung, Temperatur und RAM. Unter
 **Einstellungen → System** stehen Gerät, TensorRT-Version, Video-Dekoder und der Zustand der
@@ -250,6 +271,7 @@ sentinel/
   detector.py          NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
   trt.py               TensorRT-Ausführung auf der Jetson-GPU (CUDA per ctypes, ohne pycuda)
   sysinfo.py           Geräteerkennung, GPU-Last, Temperatur, RAM
+  fan.py               Lüfterregelung für den Jetson (PWM-Kurve)
   onnxlite.py          KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
   streams.py           Empfang per ffmpeg oder GStreamer mit Hardware-Dekoder (Jetson)
   store.py             SQLite-Datenbank

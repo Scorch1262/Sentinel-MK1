@@ -215,3 +215,6 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.alarm{border-color:var(--danger);color:#ffd6d6;pointer-events:auto;cursor:pointer}
 @media (max-width:700px){ .head-stat .clock{display:none} }
+.fan-ico{display:inline-block;color:var(--accent-2);line-height:1}
+.fan-ico.spin{animation:fanspin 1s linear infinite}
+@keyframes fanspin{to{transform:rotate(360deg)}}

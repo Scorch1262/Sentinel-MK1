@@ -16,6 +16,7 @@ sentinel/__init__.py
 sentinel/config.py
 sentinel/detector.py
 sentinel/engine.py
+sentinel/fan.py
 sentinel/imaging.py
 sentinel/models.py
 sentinel/mqtt.py
