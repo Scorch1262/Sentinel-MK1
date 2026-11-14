@@ -1,14 +1,14 @@
 # Sentinel MK1
 
-Objekterkennung für mehrere **RTSP-Kamerastreams** auf dem **GL.iNet Brume 2** oder einem
-**NVIDIA Jetson Nano (2GB/4GB)** mit GPU-Beschleunigung – im dunklen,
+Objekterkennung für mehrere **RTSP-Kamerastreams** auf dem **NVIDIA Jetson Nano (2GB/4GB)** mit
+GPU-Beschleunigung und Hardware-Videodekoder – im dunklen,
 technischen Design der übrigen Dashboards. Personen, Tiere, Fahrzeuge usw. werden in jedem Stream
 automatisch erkannt, farbig umrahmt, als Bild in einer Galerie gespeichert und **über alle Streams
 hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehen), Korrekturen
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 1.4.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.0.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -50,7 +50,7 @@ auftaucht.
   per **MQTT** (`sentinel/alarm`) und/oder **Webhook** (JSON per POST).
 - Live-Ansicht: flüssiges Live-Bild oder exakt das analysierte Bild, Vollbild per Doppelklick,
   Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
-- **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit auf dem Brume).
+- **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit).
 - **Speicherverwaltung:** Bilder nach x Tagen bzw. ab x MB automatisch löschen – gelernte
   Personen/Objekte bleiben erhalten.
 - Alle Einstellungen in `config.json` (gut lesbar), Daten in `data/` – beides bleibt bei Updates erhalten.
@@ -96,11 +96,9 @@ sudo bash /tmp/install-jetson.sh
 | `… --ohne-desktop` / `--mit-desktop` | grafische Oberfläche aus / wieder an (ab Neustart) |
 | `… --maxtakt` | bei jedem Start `jetson_clocks` (höchste Taktraten, Lüfter empfohlen) |
 | `… --port 8096` / `--ohne-swap` | Port setzen / keine Auslagerungsdatei |
-| `sudo bash install-jetson.sh uninstall` | Dienst entfernen (Daten bleiben) |
+| `sudo bash install-jetson.sh uninstall` | Dienst entfernen (Daten bleiben in `/opt/Sentinel-MK1`) |
 | `journalctl -u sentinel -f` | Protokoll |
 | `sudo systemctl restart sentinel` | Neustart |
-
-`sh install.sh` erkennt einen Jetson ebenfalls und startet automatisch `install-jetson.sh`.
 
 ### Lüfter
 
@@ -135,48 +133,6 @@ CPU), dazu bis zu 8 × 1080p30-H.264 im Hardware-Dekoder. Damit sind auch Haupts
 Kameras mit je 2–5 Bildern/s möglich. *Diese Werte sind Erfahrungswerte, auf dem Gerät noch nicht
 gemessen – der echte Wert steht in der Kopfzeile unter „KI“.*
 
-## Installation auf dem Brume 2
-
-### Variante A – ZIP kopieren (wie bei den anderen Programmen)
-
-```sh
-# am PC: ZIP auf den Brume kopieren (auf dem Brume funktioniert scp nur mit -O)
-scp -O Sentinel-MK1.zip root@192.168.8.1:/root/
-
-# auf dem Brume (ssh root@192.168.8.1)
-cd /root && unzip -o Sentinel-MK1.zip && sh Sentinel-MK1/install.sh
-```
-
-Die ZIP entpackt direkt nach `/root/Sentinel-MK1`; für ein Update einfach dieselben Befehle mit der
-neuen ZIP ausführen (`config.json` und `data/` sind nicht in der ZIP und bleiben unverändert).
-
-### Variante B – direkt von GitHub
-
-```sh
-wget -O /tmp/install.sh https://raw.githubusercontent.com/Scorch1262/Sentinel-MK1/main/install.sh
-sh /tmp/install.sh
-```
-
-`install.sh` erledigt alles in einem Durchgang:
-
-1. Pakete per `opkg`: `python3`, `python3-pip`, `python3-sqlite3`, `ffmpeg`, `curl`, `ca-bundle`
-2. Programm nach **`/root/Sentinel-MK1`** (vorhandene `config.json` und `data/` bleiben erhalten)
-3. `numpy` als fertiges Paket in `/root/Sentinel-MK1/.pylibs` (keine Kompilierung)
-4. KI-Modelle (ca. 43 MB) aus dem OpenCV Model Zoo nach `data/models` (mit Prüfsumme)
-5. Autostart als procd-Dienst **`/etc/init.d/sentinel`** (Neustart bei Absturz)
-6. Firewall-Regel für den WAN-Port (abschaltbar mit `--ohne-firewall`)
-
-Danach im Browser `http://<IP-des-Brume>:8096/` öffnen und unter **Einstellungen → Streams**
-die Kameras eintragen, z. B. `rtsp://benutzer:passwort@192.168.200.50:554/stream2`.
-
-| Befehl | Wirkung |
-|---|---|
-| `sh install.sh` | installieren / aktualisieren |
-| `sh install.sh --port 8096` | anderen Port setzen |
-| `sh install.sh uninstall` | Dienst entfernen (Daten bleiben in `/root/Sentinel-MK1`) |
-| `/etc/init.d/sentinel restart` | neu starten |
-| `logread -e sentinel` | Protokoll ansehen |
-
 ## Updates über GitHub
 
 Unter **Einstellungen → System → Updates (GitHub)** zeigt Sentinel die installierte und die neueste
@@ -197,49 +153,18 @@ oben in der Kopfzeile ein Hinweis (automatische Prüfung alle 6 Stunden, abschal
   (Aufruf: `python3 update_hook.py <alte> <neue Version>`).
 - Repo und Zweig sind einstellbar (z. B. ein Test-Zweig). Für ein privates Repo einen GitHub-Token in
   `data/github_token` ablegen. Ältere Versionen werden nicht installiert (kein Downgrade).
-- Bei Installation über den Netzwerk-Core funktioniert zusätzlich dessen Update-Button wie gewohnt.
-
-## Netzwerk-Core MK1
-
-Sentinel MK1 ist mit dem Netzwerk-Core kompatibel. Empfohlen ist der Modus **„eigener Installer“**
-(wie beim Klingelbildschirm), weil `install.sh` auch ffmpeg und die Modelle einrichtet.
-Zeile für die App-Liste (`apps.conf`):
-
-```
-sentinel|Sentinel MK1|Sentinel-MK1|8096|@install.sh|||Objekterkennung in RTSP-Streams (Personen, Tiere, Fahrzeuge)|
-```
-
-- Der Dienst heißt `/etc/init.d/sentinel` – der Netzwerk-Core findet ihn über die ID `sentinel`
-  und startet ihn nach Updates neu. Die Version steht in `VERSION` und in `app.py` (`VERSION = "…"`).
-- Einstellungen liegen außerhalb des Core-Ordners; für Sicherung/Upload:
-  `EXTERN["sentinel"] = ("/root/Sentinel-MK1", ["config.json"])`.
-  Datenbank, Bilder und Modelle liegen in `/root/Sentinel-MK1/data/`.
-- Auch der normale Modus funktioniert (`…|8096|app.py|||…|--port 8096`): `requirements.txt`
-  enthält nur `numpy`, Daten liegen dann unter `apps/sentinel/` (`config.json`, `data/`
-  werden vom Core nicht überschrieben), fehlendes ffmpeg installiert das Programm selbst per opkg
-  und die Modelle lädt es beim ersten Start.
-- MQTT: Auf dem Netzwerk-Core läuft Mosquitto auf demselben Gerät → Broker `127.0.0.1:1883`.
-
-## Leistung auf dem Brume 2
-
-Der Brume 2 hat zwei ARM-Kerne (Cortex-A53) und kein OpenCV/onnxruntime. Sentinel bringt deshalb
-eine eigene, schlanke KI-Laufzeit mit, die nur numpy braucht (`sentinel/onnxlite.py`, Ergebnisse
-identisch zu onnxruntime). Richtwerte:
-
-- Objekterkennung 320 px: auf einem PC ca. 50 ms je Bild; auf dem Brume 2 sind etwa **1–2 s je
-  Bild** zu erwarten (noch nicht auf dem Gerät gemessen – der aktuelle Wert steht oben in der
-  Kopfzeile unter „KI“). Mehrere Streams werden abwechselnd analysiert.
-- Empfehlungen: **Substream** der Kamera (640×360 o. ä.), **1–2 Bilder/s**, Bewegungsfilter an.
-  Bei vielen Kameras „nur Keyframes“ aktivieren – das spart beim Dekodieren am meisten.
-- Modellgröße 416 px ist genauer, braucht aber ca. 1,7× so lange.
 
 ## Erkennungsqualität
 
 | Modell | Eingang | Genauigkeit (COCO mAP) | empfohlen für |
 |---|---|---|---|
 | **YOLOX-S** | 640 px | 40,5 | Jetson-GPU (Standard dort) |
-| YOLOX-Tiny | 416 px | 32,8 | Jetson ohne GPU-Engine, schnelle PCs |
-| NanoDet-Plus | 320/416 px | 30,4 | GL.iNet Brume 2 (Standard dort) |
+| YOLOX-Tiny | 416 px | 32,8 | ohne GPU (Standard dort), mehr Kameras |
+| NanoDet-Plus | 320/416 px | 30,4 | am schnellsten; Übergang, solange die YOLOX-Engine gebaut wird |
+
+Ohne GPU (oder solange die TensorRT-Engines gebaut werden) rechnet Sentinel mit einer eigenen,
+schlanken KI-Laufzeit auf der CPU (`sentinel/onnxlite.py`, nur numpy, Ergebnisse identisch zu
+onnxruntime) – deutlich langsamer, aber ohne Ausfall.
 
 Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen zusammen:
 
@@ -285,18 +210,17 @@ Präfix `sentinel` ist änderbar.
 
 ```
 app.py                 Start (python3 app.py [--port 8096] [--host 0.0.0.0] [--data ORDNER])
-install.sh             Installer für den Brume 2 (auch für den Netzwerk-Core; startet auf dem Jetson install-jetson.sh)
 install-jetson.sh      Installer für NVIDIA Jetson Nano (apt, TensorRT-Engines, systemd)
 requirements.txt       numpy
 VERSION
 sentinel/
   engine.py            Streams, Analyse, Verfolgung, Wiedererkennung, Alarme, Aufräumen
-  detector.py          NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
+  detector.py          YOLOX / NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
   trt.py               TensorRT-Ausführung auf der Jetson-GPU (CUDA per ctypes, ohne pycuda)
   sysinfo.py           Geräteerkennung, GPU-Last, Temperatur, RAM
   fan.py               Lüfterregelung für den Jetson (PWM-Kurve)
-  onnxlite.py          KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
-  streams.py           Empfang per ffmpeg oder GStreamer mit Hardware-Dekoder (Jetson)
+  onnxlite.py          CPU-Rückfall: KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
+  streams.py           Empfang per GStreamer mit Hardware-Dekoder (NVDEC), Rückfall ffmpeg
   store.py             SQLite-Datenbank
   web.py               Webserver + JSON-API
   updater.py           Updates aus dem GitHub-Repo (Sicherung, Installation, Neustart)

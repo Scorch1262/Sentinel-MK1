@@ -17,7 +17,7 @@ YOLOX_REL = "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1
 # Erkennungsmodelle: Schluessel = Wert von detection.model in config.json
 DETECTORS = {
     "nanodet": dict(key="detector", title="NanoDet-Plus", input=416, kind="nanodet",
-                    note="schnell, für CPU (Brume 2)"),
+                    note="am schnellsten, aber am ungenauesten"),
     "yolox_tiny": dict(key="yolox_tiny", title="YOLOX-Tiny", input=416, kind="yolox",
                        note="genauer, ca. 4× Rechenaufwand von NanoDet"),
     "yolox_s": dict(key="yolox_s", title="YOLOX-S", input=640, kind="yolox",

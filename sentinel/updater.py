@@ -21,9 +21,10 @@ import threading
 import time
 import urllib.request
 
-PROGRAM_FILES = ["app.py", "VERSION", "requirements.txt", "install.sh", "install-jetson.sh", "README.md",
+PROGRAM_FILES = ["app.py", "VERSION", "requirements.txt", "install-jetson.sh", "README.md",
                  "LICENSE", "CHANGELOG.md", "MANIFEST", "update_hook.py", ".gitignore"]
 PROGRAM_DIRS = ["sentinel", "static", "docs"]
+OBSOLETE_FILES = ["install.sh"]   # gehoerte zu frueheren Versionen (GL.iNet Brume 2) - wird beim Update entfernt
 
 
 def vtuple(v):
@@ -180,7 +181,7 @@ class Updater:
             bdir = os.path.join(self.data_dir, "backup", "v%s" % self.version)
             shutil.rmtree(bdir, ignore_errors=True)
             os.makedirs(bdir)
-            for f in PROGRAM_FILES:
+            for f in PROGRAM_FILES + OBSOLETE_FILES:
                 if os.path.isfile(os.path.join(self.base, f)):
                     shutil.copy2(os.path.join(self.base, f), os.path.join(bdir, f))
             for d in PROGRAM_DIRS:
@@ -191,7 +192,7 @@ class Updater:
             # Installieren
             self._step("installiere v%s" % new_ver)
             install_tree(src, self.base)
-            for sh in ("install.sh", "install-jetson.sh"):
+            for sh in ("install-jetson.sh",):
                 p = os.path.join(self.base, sh)
                 if os.path.exists(p):
                     os.chmod(p, 0o755)
@@ -329,3 +330,9 @@ def install_tree(src, dst):
             tmp = os.path.join(dst, f + ".neu")
             shutil.copy2(s, tmp)
             os.replace(tmp, os.path.join(dst, f))
+    for f in OBSOLETE_FILES:
+        if not os.path.exists(os.path.join(src, f)) and os.path.isfile(os.path.join(dst, f)):
+            try:
+                os.remove(os.path.join(dst, f))
+            except OSError:
+                pass

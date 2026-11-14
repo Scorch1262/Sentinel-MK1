@@ -1,4 +1,4 @@
-"""Erkennung der Plattform (GL.iNet Brume 2 / NVIDIA Jetson / PC) und Systemwerte fuer die Kopfzeile."""
+"""Erkennung des Geraets (NVIDIA Jetson / PC) und Systemwerte fuer die Kopfzeile."""
 import glob
 import os
 import re
@@ -12,9 +12,6 @@ def is_jetson():
     return _CACHE["jetson"]
 
 
-def is_openwrt():
-    return os.path.exists("/etc/openwrt_release")
-
 
 def model_name():
     for p in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
@@ -22,12 +19,6 @@ def model_name():
             return open(p, "rb").read().decode("utf-8", "replace").strip("\x00 \n")
         except Exception:
             pass
-    if is_openwrt():
-        try:
-            m = re.search(r"DISTRIB_DESCRIPTION='([^']*)'", open("/etc/openwrt_release").read())
-            return m.group(1) if m else "OpenWrt"
-        except Exception:
-            return "OpenWrt"
     return ""
 
 
@@ -43,8 +34,6 @@ def l4t_version():
 def platform_name():
     if is_jetson():
         return model_name() or "NVIDIA Jetson"
-    if is_openwrt():
-        return model_name() or "OpenWrt"
     return model_name() or "PC"
 
 

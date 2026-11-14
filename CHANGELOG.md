@@ -1,5 +1,13 @@
 # Änderungen
 
+## 2.0.0
+- Sentinel MK1 ist jetzt ausschließlich für den NVIDIA Jetson Nano: Unterstützung für den
+  GL.iNet Brume 2 (install.sh, opkg/procd, Netzwerk-Core) entfernt
+- install.sh entfällt (wird beim Update automatisch gelöscht); Installation nur noch mit
+  install-jetson.sh
+- Standardwerte für den Jetson: Analyse-Abstand 0,3 s, Speicher bis 8 GB, ohne GPU YOLOX-Tiny
+- Texte und Hinweise in Oberfläche und README auf den Jetson zugeschnitten
+
 ## 1.4.0
 - Deutlich bessere Objekterkennung: neues Modell YOLOX-S (640 px, Standard auf der
   Jetson-GPU) und YOLOX-Tiny; NanoDet bleibt für den Brume 2

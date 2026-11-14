@@ -2,7 +2,7 @@
 
 Zwei Wege, je nach Geraet:
 
-* ffmpeg (GL.iNet Brume 2, PC): ein ffmpeg-Prozess mit zwei Ausgaben aus derselben Bildfolge -
+* ffmpeg (Rueckfall, MJPEG-Kameras, PC): ein ffmpeg-Prozess mit zwei Ausgaben aus derselben Bildfolge -
   MJPEG fuer Anzeige/Galerie und Rohbild RGB24 fuer die Erkennung.
 * GStreamer mit Hardware-Dekoder (NVIDIA Jetson): rtspsrc -> nvv4l2decoder (NVDEC) -> nvvidconv
   (Skalierung auf der GPU-Hardware) -> Rohbild. JPEGs werden nur bei Bedarf mit OpenCV erzeugt

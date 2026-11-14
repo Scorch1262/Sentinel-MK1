@@ -1,1 +1,1 @@
-"""Sentinel MK1 - Objekterkennung in RTSP-Streams fuer GL.iNet Brume 2."""
+"""Sentinel MK1 - Objekterkennung in RTSP-Streams fuer NVIDIA Jetson Nano."""

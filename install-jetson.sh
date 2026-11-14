@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=1.4.0
+VERSION=2.0.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -85,7 +85,7 @@ if [ "$ACTION" = "uninstall" ]; then
 fi
 
 if [ ! -f /etc/nv_tegra_release ]; then
-    fail "kein NVIDIA Jetson erkannt (/etc/nv_tegra_release fehlt). Fuer den GL.iNet Brume 2: sh install.sh"
+    fail "kein NVIDIA Jetson erkannt (/etc/nv_tegra_release fehlt) - Sentinel MK1 ist fuer den Jetson Nano gebaut"
 fi
 L4T=$(head -n1 /etc/nv_tegra_release | sed -n 's/^# R\([0-9]*\) (release), REVISION: \([0-9.]*\).*/R\1.\2/p')
 MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
@@ -168,7 +168,8 @@ systemctl stop sentinel >/dev/null 2>&1
 mkdir -p "$DIR"
 if [ "$SRC" != "$DIR" ]; then
     rm -rf "$DIR/sentinel" "$DIR/static"
-    for f in app.py VERSION requirements.txt install.sh install-jetson.sh README.md LICENSE CHANGELOG.md; do
+    rm -f "$DIR/install.sh"            # Brume-2-Installer frueherer Versionen
+    for f in app.py VERSION requirements.txt install-jetson.sh README.md LICENSE CHANGELOG.md MANIFEST; do
         [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$DIR/$f"
     done
     cp -r "$SRC/sentinel" "$DIR/sentinel"

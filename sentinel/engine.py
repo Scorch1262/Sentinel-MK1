@@ -228,9 +228,7 @@ class Engine:
     def start(self):
         self.log("Sentinel MK1 v%s startet (Daten: %s)" % (self.version, self.data_dir))
         if not find_ffmpeg():
-            self.log("WARNUNG: ffmpeg fehlt - auf dem Brume: opkg update && opkg install ffmpeg")
-            if shutil.which("opkg") and hasattr(os, "geteuid") and os.geteuid() == 0:
-                threading.Thread(target=self._install_ffmpeg, daemon=True).start()
+            self.log("WARNUNG: ffmpeg fehlt - Jetson: sudo apt-get install ffmpeg (bzw. install-jetson.sh erneut ausführen)")
         if sysinfo.is_jetson() or os.environ.get("SENTINEL_FAN_SYSFS"):
             from .fan import FanController
             self.fan = FanController(self.cfg, self.log)
@@ -246,23 +244,11 @@ class Engine:
         threading.Thread(target=self._detect_loop, daemon=True).start()
         threading.Thread(target=self._housekeeping, daemon=True).start()
 
-    def _install_ffmpeg(self):
-        """Fehlt ffmpeg (z. B. Installation ohne install.sh), wird es per opkg nachinstalliert."""
-        import subprocess
-        self.log("Installiere ffmpeg per opkg ...")
-        try:
-            subprocess.call(["opkg", "update"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
-            subprocess.call(["opkg", "install", "ffmpeg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=600)
-        except Exception as e:
-            self.log("ffmpeg-Installation fehlgeschlagen: %s" % e)
-        self.log("ffmpeg %s" % ("installiert" if find_ffmpeg() else "weiterhin nicht verfuegbar"))
-
     def detector_choice(self):
-        """Gewaehltes Erkennungsmodell; 'auto' = YOLOX-S auf Jetson-GPU, sonst NanoDet."""
+        """Gewaehltes Erkennungsmodell; 'auto' = YOLOX-S auf der GPU, ohne GPU YOLOX-Tiny."""
         m = self.cfg.get("detection").get("model", "auto")
         if m not in DETECTORS:
-            m = "yolox_s" if self.use_gpu() else "nanodet"
+            m = "yolox_s" if self.use_gpu() else "yolox_tiny"
         return m
 
     def wanted_models(self):

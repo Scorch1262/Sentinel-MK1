@@ -1,11 +1,10 @@
 """
 onnxlite - minimale ONNX-Laufzeit nur mit numpy (Sentinel MK1)
 
-Auf dem GL.iNet Brume 2 (OpenWrt, musl, ARM) gibt es weder OpenCV noch
-onnxruntime als fertiges Paket - numpy dagegen schon. Dieses Modul liest
-ONNX-Dateien mit einem eigenen, kleinen Protobuf-Decoder und fuehrt die
-Operatoren aus, die die verwendeten Modelle (NanoDet-Plus, YuNet, SFace)
-brauchen. BatchNorm wird beim Laden in die vorangehende Faltung eingerechnet.
+Rueckfall-Laufzeit fuer die CPU (z. B. solange die TensorRT-Engines auf dem Jetson gebaut werden
+oder ohne GPU): liest ONNX-Dateien mit einem eigenen, kleinen Protobuf-Decoder und fuehrt die
+Operatoren aus, die die verwendeten Modelle (NanoDet-Plus, YOLOX, YuNet, SFace) brauchen - nur mit
+numpy. BatchNorm wird beim Laden in die vorangehende Faltung eingerechnet.
 """
 import struct
 

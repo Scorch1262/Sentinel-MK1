@@ -10,7 +10,6 @@ docs/korrektur.png
 docs/objekte.png
 docs/vorschau.png
 install-jetson.sh
-install.sh
 requirements.txt
 sentinel/__init__.py
 sentinel/config.py

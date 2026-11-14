@@ -10,7 +10,7 @@ lernt aus Korrekturen und loest Alarme aus.
 Start:   python3 app.py [--port 8096] [--host 0.0.0.0]
 Updates: Weboberflaeche -> Einstellungen -> System -> "Update installieren" (GitHub Scorch1262/Sentinel-MK1)
 Daten:   config.json und Ordner data/ neben dieser Datei
-Geraete: GL.iNet Brume 2 (install.sh), NVIDIA Jetson Nano (install-jetson.sh), PC
+Geraete: NVIDIA Jetson Nano (install-jetson.sh); zum Testen auch ein PC mit Python 3, numpy und ffmpeg
 """
 import argparse
 import os
@@ -19,11 +19,11 @@ import sys
 import threading
 import time
 
-VERSION = "1.4.0"
+VERSION = "2.0.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
-# numpy/OpenBLAS: hoechstens zwei Kerne (Brume 2 hat zwei)
+# numpy/OpenBLAS: Kerne begrenzen (Jetson: 4, sonst 2)
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 # Jetson (Cortex-A57): manche OpenBLAS-Builds brechen sonst mit "Illegal instruction" ab
@@ -79,17 +79,13 @@ def main():
     try:
         import numpy  # noqa: F401
     except ImportError:
-        print("FEHLER: numpy fehlt.  Brume 2: sh install.sh  |  Jetson: sudo bash install-jetson.sh  |  PC: pip install numpy")
+        print("FEHLER: numpy fehlt.  Jetson: sudo bash install-jetson.sh  |  PC: pip install numpy")
         sys.exit(1)
     from sentinel.config import Config
     from sentinel.engine import Engine
     from sentinel.updater import Updater
     from sentinel.web import Api, Server, make_handler
-    from sentinel import sysinfo
-    first = None
-    if sysinfo.is_jetson():
-        first = {"detection": {"model_size": 416, "interval_s": 0.3}, "storage": {"max_mb": 8000}}
-    cfg = Config(os.path.join(base, "config.json"), first_run=first)
+    cfg = Config(os.path.join(base, "config.json"))
     srv_cfg = cfg.get("server")
     env_port = os.environ.get("SENTINEL_PORT")
     port = args.port or (int(env_port) if env_port else None) or int(srv_cfg.get("port", 8096))

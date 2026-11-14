@@ -694,14 +694,13 @@ async function loadSettings() {
   const se = streamEditor(streams);
   box.append(el('div', {class: 'panel', style: {gridColumn: '1/-1'}}, el('h3', null, 'Streams (Kameras)'), se.wrap,
     el('div', {class: 'actions'},
-      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: S.state.jetson ? 4 : 2, width: 640, decoder: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
+      el('button', {class: 'btn btn-ghost', onclick: () => { streams.push({name: 'Kamera ' + (streams.length + 1), url: '', enabled: true, detect: true, fps: 4, width: 640, decoder: 'auto'}); se.draw(); }}, '+ Stream hinzufügen'),
       el('button', {class: 'btn', onclick: async () => {
         try { await api('/api/streams', {body: {streams}}); toast('Streams gespeichert – verbinde …'); S.cfg = await api('/api/config'); fillSelects(); setTimeout(loadSettings, 1500); }
         catch (e) { toast(e.message); }
       }}, 'Streams speichern')),
-    el('p', {class: 'muted small', style: {marginBottom: 0}}, S.state.jetson ?
-      'Jetson: Videos werden per Hardware (NVDEC) dekodiert und skaliert – auch Hauptstreams (1080p, H.264/H.265) sind möglich. 2–5 Bilder/s je Kamera.' :
-      'Tipp für den Brume 2: den Unter-/Substream der Kamera verwenden (z. B. 640×360). 1–2 Bilder/s reichen für die Erkennung. Die Bildbreite wird vor der Analyse verkleinert.')));
+    el('p', {class: 'muted small', style: {marginBottom: 0}}, 'H.264/H.265 werden per Hardware (NVDEC) dekodiert und skaliert – auch Hauptstreams (1080p) sind möglich. ',
+      'MJPEG-Kameras laufen über ffmpeg. 2–5 Bilder/s je Kamera reichen für die Erkennung.')));
   /* Erkennung */
   const D = C.detection;
   const GT = Object.assign({}, D.group_thresholds || {});
@@ -722,12 +721,12 @@ async function loadSettings() {
   S.meta.classes.forEach(c => { const cb = el('input', {type: 'checkbox', checked: extra.has(c.id)}); cb.onchange = () => cb.checked ? extra.add(c.id) : extra.delete(c.id);
     cp.append(el('label', {class: 'chk small'}, cb, c.de)); });
   const thr = numIn(Math.round(D.threshold * 100), {min: 20, max: 95, step: 5});
-  const mdl = el('select', null, el('option', {value: 'auto'}, 'Automatisch (Jetson-GPU: YOLOX-S, sonst NanoDet)'),
+  const mdl = el('select', null, el('option', {value: 'auto'}, 'Automatisch (GPU: YOLOX-S, ohne GPU: YOLOX-Tiny)'),
     el('option', {value: 'yolox_s'}, 'YOLOX-S 640 px – sehr genau (Jetson-GPU)'), el('option', {value: 'yolox_tiny'}, 'YOLOX-Tiny 416 px – genau'),
-    el('option', {value: 'nanodet'}, 'NanoDet-Plus – schnell (Brume 2 / CPU)')); mdl.value = D.model || 'auto';
-  const ms = el('select', null, el('option', {value: 320}, '320 px – schnell (empfohlen für Brume 2)'), el('option', {value: 416}, '416 px – genauer, ca. 1,7× Rechenzeit')); ms.value = D.model_size;
+    el('option', {value: 'nanodet'}, 'NanoDet-Plus – am schnellsten, ungenau')); mdl.value = D.model || 'auto';
+  const ms = el('select', null, el('option', {value: 320}, '320 px – schneller'), el('option', {value: 416}, '416 px – genauer')); ms.value = D.model_size;
   const msRow = [el('label', null, 'NanoDet-Größe'), ms];
-  const updMs = () => msRow.forEach(e => e.style.display = (mdl.value === 'nanodet' || (mdl.value === 'auto' && !S.state.gpu_available)) ? '' : 'none');
+  const updMs = () => msRow.forEach(e => e.style.display = mdl.value === 'nanodet' ? '' : 'none');
   mdl.onchange = updMs;
   const ac = el('select', null, el('option', {value: 'auto'}, 'automatisch (GPU, falls vorhanden)'), el('option', {value: 'gpu'}, 'GPU (TensorRT, Jetson)'), el('option', {value: 'cpu'}, 'nur CPU')); ac.value = D.accel || 'auto';
   const mh = numIn(D.min_hits, {min: 1, max: 10}), iv = numIn(D.interval_s, {min: .2, step: .1}), mg = el('input', {type: 'checkbox', checked: D.motion_gate});
@@ -795,7 +794,7 @@ async function loadSettings() {
     el('div', {class: 'form'},
       el('label', null, 'MQTT'), el('label', {class: 'chk'}, me, 'Alarme an MQTT-Broker senden'),
       el('label', null, 'Broker'), el('div', {style: {display: 'flex', gap: '8px'}}, mhst, mp),
-      el('div', {class: 'hint'}, 'Auf dem Netzwerk-Core läuft Mosquitto auf demselben Gerät: 127.0.0.1 : 1883'),
+      el('div', {class: 'hint'}, 'Läuft Mosquitto auf dem Jetson selbst: 127.0.0.1 : 1883'),
       el('label', null, 'Benutzer'), mu, el('label', null, 'Passwort'), mpw,
       el('label', null, 'Topic-Präfix'), mpre, el('div', {class: 'hint'}, 'Alarme: <präfix>/alarm · Erkennungen: <präfix>/detection'),
       el('label', null, 'Erkennungen'), el('label', {class: 'chk'}, mdet, 'jede Sichtung ebenfalls senden')),
