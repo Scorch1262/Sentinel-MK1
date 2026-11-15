@@ -1,5 +1,11 @@
 # Änderungen
 
+## 2.6.1
+- MQTT: Es bleibt kein Wert mehr beim Broker gespeichert – Stream-Zustand und Speicherfüllstand
+  werden ohne *retain* gesendet
+- Von v2.6.0 beim Broker gespeicherte Werte werden einmalig gelöscht (leere retained-Nachricht
+  je Topic, danach nie wieder)
+
 ## 2.6.0
 - Freier Speicher aller verfügbaren Speicherorte als Balken (Datenordner, gewählter Speicherort,
   eingebundene USB-/SATA-Laufwerke, Netzwerkspeicher), jede Sekunde gemessen; gleiche

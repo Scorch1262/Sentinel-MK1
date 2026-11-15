@@ -1251,10 +1251,11 @@ class Engine:
                     continue
                 fail = []
 
-                def pub(topic, val):
+                def pub(topic, val, retain=False):
+                    # Werte werden NICHT beim Broker gespeichert (kein retain)
                     if fail:
                         return False
-                    if self.mqtt.publish(m, topic, val, retain=True):
+                    if self.mqtt.publish(m, topic, val, retain=retain):
                         return True
                     fail.append(topic)
                     return False
@@ -1263,8 +1264,8 @@ class Engine:
                 full = now - self.mq_full > 60          # alle 60 s alles erneut senden
                 if m.get("publish_streams", True):
                     states = self.stream_states()
-                    self._mq_forget(pub, pre, "stream", set(x["key"] for x in states),
-                                    [k for k in states[0] if k not in ("id", "key")] if states else [])
+                    self._mq_clear_retained(pub, pre, "stream", [x["key"] for x in states],
+                                            [k for k in states[0] if k not in ("id", "key")] if states else [])
                     for st in states:
                         base = "%s/stream/%s" % (pre, st["key"])
                         vals = {k: v for k, v in st.items() if k not in ("id", "key")}
@@ -1281,9 +1282,9 @@ class Engine:
                 if m.get("publish_storage", True) and now - last_space >= float(m.get("storage_interval_s", 1) or 1) - 0.05:
                     last_space = now
                     locs, _ = self.space.get()
-                    self._mq_forget(pub, pre, "speicher", set(x["key"] for x in locs),
-                                    ["name", "erreichbar", "aktiv", "frei_gb", "belegt_gb", "gesamt_gb",
-                                     "belegt_prozent", "frei_prozent", "pfad"])
+                    self._mq_clear_retained(pub, pre, "speicher", [x["key"] for x in locs],
+                                            ["name", "erreichbar", "aktiv", "frei_gb", "belegt_gb", "gesamt_gb",
+                                             "belegt_prozent", "frei_prozent", "pfad"])
                     for l in locs:
                         base = "%s/speicher/%s" % (pre, l["key"])
                         gb = lambda v: round(v / 1073741824.0, 2) if v is not None else ""
@@ -1305,16 +1306,25 @@ class Engine:
                     self._mq_err = time.time()
                     self.log("MQTT-Status: %s" % e)
 
-    def _mq_forget(self, pub, pre, kind, keys, fields):
-        """Weggefallene Streams/Speicherorte: gespeicherte (retained) Werte beim Broker loeschen."""
-        known = self.__dict__.setdefault("mq_known", {}).setdefault(kind, set())
-        for k in known - keys:
-            for f in list(fields) + ["json"]:
-                pub("%s/%s/%s/%s" % (pre, kind, k, f), "")     # leere retained-Nachricht = loeschen
-            for t in [t for t in self.mq_sent if t.startswith("%s/%s/%s/" % (pre, kind, k))]:
-                self.mq_sent.pop(t, None)
-        known.clear()
-        known.update(keys)
+    def _mq_clear_retained(self, pub, pre, kind, keys, fields):
+        """v2.6.0 hat die Werte beim Broker gespeichert (retained). Einmalig je Topic eine leere
+        retained-Nachricht senden - damit loescht der Broker den gespeicherten Wert."""
+        done = self.__dict__.get("mq_cleared")
+        if done is None:
+            r = self.store.q("SELECT v FROM meta WHERE k='mqtt_cleared'", one=True)
+            done = self.mq_cleared = set(json.loads(r["v"])) if r and r["v"] else set()
+        new = False
+        for k in keys:
+            base = "%s/%s/%s" % (pre, kind, k)
+            if base in done:
+                continue
+            ok = all(pub("%s/%s" % (base, f), "", retain=True) for f in list(fields) + ["json"])
+            if ok:
+                done.add(base)
+                new = True
+        if new:
+            self.store.x("INSERT OR REPLACE INTO meta(k, v) VALUES('mqtt_cleared', ?)",
+                         (json.dumps(sorted(done)),))
 
     def _recording_done(self, eid, rel, dur, size):
         self.store.x("UPDATE events SET rec=0, clip=?, clip_dur=?, clip_size=? WHERE id=?",

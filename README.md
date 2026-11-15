@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.6.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.6.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -337,7 +337,8 @@ Präfix `sentinel` ist änderbar.
 
 Jeder Stream hat unter seinem Namen eigene Topics (Leerzeichen und `/ + #` werden zu `_`, z. B.
 „Garten Süd“ → `Garten_Süd`). Gesendet wird bei jeder Änderung (geprüft jede Sekunde) und alle
-60 s komplett, jeweils *retained* – ein neu verbundener Client sieht sofort den aktuellen Stand.
+60 s komplett. Es bleibt **kein Wert beim Broker gespeichert** (kein *retain*) – ein neu
+verbundener Client erhält den vollständigen Stand spätestens nach 60 s.
 
 | Topic `sentinel/stream/<Name>/…` | Wert |
 |---|---|
@@ -369,8 +370,8 @@ eingebundene USB-/SATA-Laufwerke, Netzwerkspeicher:
 | `aktiv` | `1` = hier werden Bilder und Videos gespeichert |
 | `name`, `pfad`, `json` | Anzeigename, Pfad, alles als JSON |
 
-Fällt ein Stream oder Speicherort weg, löscht Sentinel seine gespeicherten Werte beim Broker.
-Beides lässt sich unter Einstellungen → MQTT abschalten.
+Auch alle übrigen Nachrichten (Alarme, Erkennungen, Bewegung, Videos) werden ohne *retain*
+gesendet. Beides lässt sich unter Einstellungen → MQTT abschalten.
 
 ## Dateien
 
