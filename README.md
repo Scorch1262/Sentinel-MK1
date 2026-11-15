@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.4.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.5.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -234,7 +234,13 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
   umgerechnet. **Länge** = Mindestlänge; mit *verlängern, solange Bewegung* läuft die Aufnahme
   weiter, bis 5 s Ruhe sind oder die **Höchstlänge** erreicht ist. Bei Dauerbewegung folgt direkt
   der nächste Schnipsel.
-- Die Aufnahme beginnt mit dem Erkennen (ca. 1–2 s Verzögerung, kein Vorlauf).
+- **Vorlauf** (Standard 5 s, 0–60 s): Sekunden *vor* dem Ereignis werden mitgespeichert. Dafür
+  läuft für jeden Stream mit Aufnahme ein kleiner Ringpuffer im Arbeitsspeicher (`/dev/shm`):
+  ffmpeg kopiert den Kamerastream ohne Umrechnen in 2-s-Stücke, die reihum überschrieben werden.
+  Bei einem Ereignis werden die Stücke ab „Ereignis minus Vorlauf“ gesichert und mit dem Rest zu
+  einer MP4 zusammengefügt. Geschnitten wird an Schlüsselbildern, der Vorlauf kann deshalb etwas
+  länger ausfallen. Speicherbedarf je Stream etwa Vorlauf × Bitrate (5 s bei 4 Mbit/s ≈ 3 MB plus
+  Reserve). Vorlauf 0 = kein Puffer, Aufnahme startet ca. 1–2 s nach dem Erkennen.
 - Der Tab **Ereignisse** zeigt alle Bewegungen und Aufnahmen mit Filter nach Stream, Art und Tag;
   Videos lassen sich im Browser abspielen und herunterladen. H.265-Videos spielen nicht alle
   Browser ab – dann herunterladen (z. B. VLC).
@@ -255,6 +261,10 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
   Ohne Haken bleiben ältere Bilder am alten Ort und sind trotzdem sichtbar.
 - Ist das Ziel nicht erreichbar (NAS aus, Festplatte abgezogen), speichert Sentinel vorübergehend
   im Datenordner und versucht es alle 2 Minuten erneut – es geht nichts verloren.
+- **Loop-Betrieb** (wahlweise): Der Speicherort wird bis auf eine Reserve gefüllt (einstellbar in GB,
+  mindestens 5 % der Größe), danach löscht Sentinel laufend die ältesten Bilder und Videos – wie ein
+  Ringspeicher. Die Grenze „Höchstens … MB“ gilt dann nicht, „Behalten … Tage“ weiterhin. Ohne
+  Loop werden bei vollem Speicher (unter 200 MB frei) keine Videos mehr aufgenommen.
 - Datenbank, Modelle und Gelerntes bleiben immer im Datenordner.
 - Fritzbox: Server `fritz.box`, Freigabe = Name des USB-Speichers an der Fritzbox, Benutzer mit
   NAS-Berechtigung; bei älteren Modellen SMB-Version 1.0 wählen.

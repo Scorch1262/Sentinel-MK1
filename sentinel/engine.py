@@ -211,7 +211,7 @@ class Engine:
             os.makedirs(d, exist_ok=True)
         self.logbuf = collections.deque(maxlen=300)
         self.media = MediaStore(config, self.data_dir, self.log)
-        self.recorder = Recorder(self.log)
+        self.recorder = Recorder(self.log, self.data_dir)
         self.mot = {}               # stream_id -> Zustand der Bewegungserkennung
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
         # Aufnahmen, die beim letzten Beenden noch liefen, sind unvollstaendig -> Kennzeichen zuruecksetzen
@@ -234,6 +234,7 @@ class Engine:
         self.det = None
         self.faces = None
         self.det_lock = threading.Lock()
+        self.clean_lock = threading.Lock()
         self.build_pause = False
         self.det_ms = collections.deque(maxlen=30)
         self.det_passes = collections.deque(maxlen=30)
@@ -384,6 +385,9 @@ class Engine:
             for w in self.workers.values():
                 w.stop()
             self.workers.clear()
+        for sid in self.recorder.ring_ids():
+            self.recorder.stop_ring(sid)
+        with self.lock:
             self.tracks.clear()
             self.live.clear()
         with self.det_lock:
@@ -1088,11 +1092,107 @@ class Engine:
         day = time.strftime("%Y-%m-%d", time.localtime(now))
         rel = "%s/%s_%s.mp4" % (day, time.strftime("%H%M%S", time.localtime(now)), w.id)
         codec = (w.probed[0] if getattr(w, "probed", None) else None) or ""
+        if not self._space_ok():
+            return False
         ok = self.recorder.start(sc, codec, getattr(w, "proto", "tcp"), os.path.join(self.media.clip_dir, rel), rel,
-                                 eid, self._recording_done)
+                                 eid, self._recording_done, t_event=now)
         if ok:
             self.store.x("UPDATE events SET rec=1 WHERE id=?", (eid,))
         return ok
+
+    def _sync_rings(self):
+        """Vorlauf-Ringpuffer fuer Streams mit Aufnahme + Vorlauf starten bzw. beenden."""
+        want = set()
+        if not self.build_pause:
+            with self.lock:
+                ws = list(self.workers.values())
+            for w in ws:
+                sc = self.stream_cfg(w.id)
+                if not sc or (sc.get("record") or "off") == "off" or float(sc.get("record_pre_s", 0) or 0) <= 0:
+                    continue
+                if stream_mode(sc) == "off":
+                    continue                    # ohne Analyse gibt es keine Ausloeser
+                want.add(w.id)
+                if w.status != "live":
+                    continue                    # Ring erst starten, wenn die Kamera Bilder liefert
+                codec = (w.probed[0] if getattr(w, "probed", None) else None) or ""
+                try:
+                    self.recorder.ensure_ring(sc, codec, getattr(w, "proto", "tcp"))
+                except Exception as e:
+                    self.log("Vorlauf-Puffer: %s" % e)
+        for sid in self.recorder.ring_ids():
+            if sid not in want:
+                self.recorder.stop_ring(sid)
+
+    def _space_ok(self):
+        """Vor einer Aufnahme: genug Platz? Im Loop-Betrieb vorher Platz schaffen."""
+        st = self.cfg.get("storage")
+        free, _ = self._free()
+        if free is None:
+            return True
+        if st.get("loop"):
+            if free < self._reserve():
+                self.loop_cleanup()
+            return True
+        if free < 200 * 1048576:
+            if time.time() - getattr(self, "_full_warn", 0) > 600:
+                self._full_warn = time.time()
+                self.log("Speicher voll (%d MB frei) - keine Aufnahme. Tipp: Loop-Betrieb einschalten "
+                         "oder alte Bilder/Videos löschen." % (free // 1048576))
+            return False
+        return True
+
+    def _free(self):
+        try:
+            v = os.statvfs(self.media.root)
+            return v.f_bavail * v.f_frsize, v.f_blocks * v.f_frsize
+        except OSError:
+            return None, None
+
+    def _reserve(self):
+        """Im Loop-Betrieb freizuhaltender Platz (Bytes)."""
+        st = self.cfg.get("storage")
+        free, total = self._free()
+        gb = float(st.get("loop_reserve_gb", 2) or 0)
+        pct = float(st.get("loop_reserve_pct", 5) or 0)
+        return max(gb * 1073741824, (total or 0) * pct / 100.0, 300 * 1048576)
+
+    def loop_cleanup(self):
+        """Loop-Betrieb: Speicher bis auf die Reserve fuellen, dann die aeltesten Bilder/Videos
+        ueberschreiben (loeschen). Gelernte Personen/Objekte bleiben erhalten."""
+        st = self.cfg.get("storage")
+        if not st.get("loop"):
+            return 0
+        with self.clean_lock:
+            removed = 0
+            reserve = self._reserve()
+            for _ in range(500):
+                free, _t = self._free()
+                if free is None or free >= reserve:
+                    break
+                d1 = self.store.q("SELECT id, ts FROM detections ORDER BY ts LIMIT 50")
+                e1 = self.store.q("SELECT id, ts FROM events WHERE rec=0 ORDER BY ts LIMIT 10")
+                if not d1 and not e1:
+                    if time.time() - getattr(self, "_loop_warn", 0) > 3600:
+                        self._loop_warn = time.time()
+                        self.log("Loop: Speicher unter der Reserve, aber keine eigenen Dateien mehr zum "
+                                 "Löschen - der Platz wird von anderen Daten belegt")
+                    break
+                if e1 and (not d1 or e1[0]["ts"] <= d1[-1]["ts"]):
+                    self.delete_events([r["id"] for r in e1])
+                    removed += len(e1)
+                else:
+                    for r in d1:
+                        self.delete_detection(r["id"], recount=False)
+                    removed += len(d1)
+            if removed:
+                self.loop_removed = getattr(self, "loop_removed", 0) + removed
+                self.store.x("UPDATE objects SET avatar_det=NULL WHERE avatar_det NOT IN (SELECT id FROM detections)")
+                if time.time() - getattr(self, "_loop_log", 0) > 600:
+                    self._loop_log = time.time()
+                    self.log("Loop: %d älteste Bilder/Videos überschrieben (Reserve %.1f GB)"
+                             % (removed, reserve / 1073741824.0))
+            return removed
 
     def _recording_done(self, eid, rel, dur, size):
         self.store.x("UPDATE events SET rec=0, clip=?, clip_dur=?, clip_size=? WHERE id=?",
@@ -1534,6 +1634,7 @@ class Engine:
     # ------------------------------------------------------------------
     def _housekeeping(self):
         last_clean = 0
+        last_loop = 0
         last_upd = time.time() - 6 * 3600 + 120   # erste Update-Pruefung 2 min nach dem Start
         confirmed = False
         while not self.stop_ev.wait(10):
@@ -1556,6 +1657,10 @@ class Engine:
                     if sid not in self.workers:
                         self.live.pop(sid, None)
                 self.media.check()
+                self._sync_rings()
+                if now - last_loop > 30:
+                    last_loop = now
+                    self.loop_cleanup()
                 if self.cfg.get("mqtt").get("enabled"):
                     self.mqtt.ping()
                 if now - last_clean > 3600:
@@ -1582,6 +1687,9 @@ class Engine:
                 self.delete_events(old)
                 removed += len(old)
         cap = float(st.get("max_mb", 2000) or 0) * 1024 * 1024
+        if st.get("loop"):
+            cap = 0                     # Loop-Betrieb: Grenze ist der freie Platz (loop_cleanup)
+            self.loop_cleanup()
         if cap > 0:
             used = self.disk_usage()
             while used > cap:
@@ -1626,6 +1734,7 @@ class Engine:
                   for s in self.cfg.get("streams") if s.get("enabled", True)]
         for x in ws:
             x["recording"] = self.recorder.busy(x["id"])
+            x["prebuf"] = self.recorder.ring_info(x["id"])
             x["analysis"] = stream_mode(self.stream_cfg(x["id"]))
         dm = list(self.det_ms)
         fm = list(self.face_ms)

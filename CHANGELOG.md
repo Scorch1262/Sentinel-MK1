@@ -1,5 +1,14 @@
 # Änderungen
 
+## 2.5.0
+- Videoschnipsel mit einstellbarem Vorlauf (0–60 s, Standard 5 s): Ringpuffer je Stream im
+  Arbeitsspeicher (ffmpeg-Segmente ohne Umrechnen), bei Ereignis werden die Stücke ab „Ereignis
+  minus Vorlauf“ gesichert und zur MP4 zusammengefügt; Anzeige „Vorlauf-Puffer … s / … MB“
+- Loop-Betrieb für den Speicherort: füllen bis zur Reserve (GB bzw. mind. 5 %), dann laufend die
+  ältesten Bilder und Videos überschreiben; Prüfung alle 30 s und vor jeder Aufnahme
+- Ohne Loop: keine Aufnahme mehr bei vollem Speicher (Hinweis im Protokoll)
+- Der Vorlauf-Puffer pausiert während des GPU-Engine-Baus
+
 ## 2.4.0
 - Analyse je Stream wählbar: Objekterkennung (KI), nur Bewegung (ohne KI) oder aus
 - Bewegungserkennung als eigene Funktion: Ereignisse mit Bild und markiertem Bereich, Schwelle in

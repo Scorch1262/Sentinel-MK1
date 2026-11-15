@@ -315,8 +315,10 @@ class MediaStore(object):
         free, total = free_space(self.root)
         t = self._target()
         t.pop("password", None)
+        st = self.cfg.get("storage")
         return dict(root=self.root, state=self.state, error=self.error, free=free, total=total, target=t,
-                    migrating=self.migrating)
+                    migrating=self.migrating, loop=bool(st.get("loop")),
+                    loop_reserve_gb=st.get("loop_reserve_gb", 2))
 
     # -------------------------------------------------------------- Umzug
     def migrate_from(self, old_root, done=None):

@@ -322,6 +322,7 @@ class Api:
                                 motion_pct=max(0.01, min(50.0, float(s.get("motion_pct") or 0.5))),
                                 record=s.get("record") if s.get("record") in ("off", "motion", "objects") else "off",
                                 record_s=max(3, min(600, int(float(s.get("record_s") or 15)))),
+                                record_pre_s=max(0, min(60, int(float(s.get("record_pre_s") or 0)))),
                                 record_extend=bool(s.get("record_extend", True)),
                                 record_max_s=max(5, min(1800, int(float(s.get("record_max_s") or 60)))),
                                 fps=float(s.get("fps") or 2), width=int(s.get("width") or 640),

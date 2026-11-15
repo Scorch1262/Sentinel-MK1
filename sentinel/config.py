@@ -45,7 +45,9 @@ DEFAULTS = {
         "max_samples": 40,
     },
     # target: Speicherort fuer Bilder/Videos (local | path | disk | nas), siehe storage.py
-    "storage": {"max_days": 30, "max_mb": 8000, "target": {"type": "local"}, "old_roots": []},
+    "storage": {"max_days": 30, "max_mb": 8000, "target": {"type": "local"}, "old_roots": [],
+                # Loop: Speicher bis auf die Reserve fuellen, dann aelteste Bilder/Videos ueberschreiben
+                "loop": False, "loop_reserve_gb": 2, "loop_reserve_pct": 5},
     "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "user": "", "password": "",
              "prefix": "sentinel", "publish_detections": False},
     "ui": {"sound": True, "repeat_list_min": 2, "live_mode": "live"},

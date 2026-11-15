@@ -847,11 +847,15 @@ function streamEditor(list) {
         el('option', {value: 'motion'}, 'Aufnahme bei Bewegung'), el('option', {value: 'objects'}, 'Aufnahme bei erkanntem Objekt'));
       rec.value = s.record || 'off';
       const rs = numIn(s.record_s || 15, {min: 3, max: 600, step: 1, class: 'num'}); rs.oninput = () => s.record_s = +rs.value;
+      const rp = numIn(s.record_pre_s != null ? s.record_pre_s : 5, {min: 0, max: 60, step: 1, class: 'num'}); rp.oninput = () => s.record_pre_s = +rp.value;
+      if (s.record_pre_s == null) s.record_pre_s = 5;
       const rx = el('input', {type: 'checkbox', checked: s.record_extend !== false}); rx.onchange = () => { s.record_extend = rx.checked; upd(); };
       const rm = numIn(s.record_max_s || 60, {min: 5, max: 1800, step: 5, class: 'num'}); rm.oninput = () => s.record_max_s = +rm.value;
       const mrow = el('span', {class: 'pair', title: 'Ab diesem Anteil bewegter Bildfläche gilt es als Bewegung (Rauschen, Regen und Blätter bleiben darunter)'},
         el('span', {class: 'muted'}, 'Bewegung ab'), mp, el('span', {class: 'muted'}, '% Bildfläche'));
       const rrow = el('div', {class: 'r small rec-row'}, rec,
+        el('span', {class: 'pair', title: 'So viele Sekunden VOR dem Ereignis werden mitgespeichert (0 = kein Vorlauf). Dafür läuft dauerhaft ein kleiner Puffer im Arbeitsspeicher.'},
+          el('span', {class: 'muted'}, 'Vorlauf'), rp, el('span', {class: 'muted'}, 's')),
         el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Länge'), rs, el('span', {class: 'muted'}, 's')),
         el('label', {class: 'chk', title: 'Aufnahme läuft weiter, solange sich noch etwas bewegt'}, rx, 'verlängern, solange Bewegung'),
         el('span', {class: 'pair rmax'}, el('span', {class: 'muted'}, 'max.'), rm, el('span', {class: 'muted'}, 's')));
@@ -903,7 +907,8 @@ function streamEditor(list) {
         el('div', {class: 'r small'},
           el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Bilder/s'), fps), el('span', {class: 'pair', title: 'Analyse-Auflösung – 1280 px erkennt weit entfernte Personen viel besser (Hauptstream nutzen)'}, el('span', {class: 'muted'}, 'Breite'), w), tr, dc,
           el('label', {class: 'chk', title: 'Nur Schlüsselbilder dekodieren – spart viel Rechenleistung, Live-Bild ruckelt'}, kf, 'nur Keyframes')),
-        (st.decoder || st.transport) ? el('div', {class: 'muted small'}, 'Aktiv: ' + [st.decoder, st.transport ? 'RTSP ' + st.transport : ''].filter(Boolean).join(' · ') + (st.online ? ' · ' + st.fps + ' Bilder/s' : '')) : null,
+        (st.decoder || st.transport) ? el('div', {class: 'muted small'}, 'Aktiv: ' + [st.decoder, st.transport ? 'RTSP ' + st.transport : '',
+          st.prebuf ? (st.prebuf.ok ? 'Vorlauf-Puffer ' + st.prebuf.seconds + ' s / ' + st.prebuf.mb + ' MB' : 'Vorlauf-Puffer startet …') : ''].filter(Boolean).join(' · ') + (st.online ? ' · ' + st.fps + ' Bilder/s' : '')) : null,
         res,
         st.error && !st.online ? el('div', {class: 'mono small err-line'}, st.error) : null));
     });
@@ -1112,6 +1117,8 @@ function storagePanel(st) {
     el('option', {value: '2.0'}, '2.0'), el('option', {value: '1.0'}, '1.0 (alte Fritzbox/NAS)'));
   ver.value = t.smb_version || '';
   const mig = el('input', {type: 'checkbox'});
+  const lp = el('input', {type: 'checkbox', checked: !!st.loop});
+  const lr = numIn(st.loop_reserve_gb != null ? st.loop_reserve_gb : 2, {min: 0.5, max: 500, step: 0.5, class: 'num'});
   const out = el('div', {class: 'stest', hidden: true});
   const rows = {
     disk: [el('label', null, 'Laufwerk'), el('div', {class: 'row'}, disk, rescan),
@@ -1126,6 +1133,12 @@ function storagePanel(st) {
   const form = el('div', {class: 'form'}, el('label', null, 'Speicherort'), typ);
   Object.values(rows).forEach(r => r.forEach(e => form.append(e)));
   form.append(el('label', null, ''), el('label', {class: 'chk'}, mig, 'vorhandene Bilder und Videos dorthin verschieben'));
+  const lrow = el('div', {class: 'row'}, el('span', {class: 'muted'}, 'freihalten:'), lr, el('span', {class: 'muted'}, 'GB'));
+  form.append(el('label', null, 'Loop-Betrieb'), el('label', {class: 'chk'}, lp, 'Speicher füllen, dann älteste Bilder und Videos überschreiben'),
+    el('label', null, ''), lrow,
+    el('div', {class: 'hint'}, 'Wie ein Ringspeicher: Sentinel nutzt den Speicherort bis auf die Reserve (mind. 5 % bzw. der Wert oben) und löscht dann laufend das Älteste. ',
+      'Die Grenze „Höchstens … MB“ gilt dann nicht; „Behalten … Tage“ weiterhin. Gelernte Personen/Objekte bleiben erhalten.'));
+  lp.onchange = () => lrow.hidden = !lp.checked; lrow.hidden = !lp.checked;
   const show = () => {
     Object.entries(rows).forEach(([k, r]) => r.forEach(e => e.hidden = k !== typ.value));
     const smb = typ.value === 'nas' && proto.value === 'smb';
@@ -1163,6 +1176,7 @@ function storagePanel(st) {
       info.append(...[el('span', {class: 'mono'}, i.root), ' ',
         el('span', {class: 'badge ' + (i.state === 'ersatz' ? 'warn' : 'ok')}, i.state === 'ok' ? 'aktiv' : i.state === 'ersatz' ? 'Ziel nicht erreichbar – speichert im Datenordner' : 'Datenordner'),
         el('span', {class: 'muted'}, ' · ' + fmtBytes(i.free) + ' frei von ' + fmtBytes(i.total)),
+        i.loop ? el('span', {class: 'badge ok'}, 'Loop') : null,
         i.migrating ? el('span', {class: 'muted'}, ' · Umzug: ' + i.migrating) : null,
         i.error ? el('div', {class: 'mono small err-line'}, i.error) : null].filter(Boolean));
     } catch (e) { info.textContent = e.message; }
@@ -1179,7 +1193,7 @@ function storagePanel(st) {
       el('button', {class: 'btn', onclick: async e => {
         const b = e.target; b.disabled = true;
         try {
-          const r = await api('/api/config', {body: {section: 'storage', values: {target: target()}, migrate: mig.checked}});
+          const r = await api('/api/config', {body: {section: 'storage', values: {target: target(), loop: lp.checked, loop_reserve_gb: +lr.value}, migrate: mig.checked}});
           showRes(r.ok, r.ok ? 'Übernommen: ' + r.msg + (mig.checked ? ' – Dateien werden im Hintergrund verschoben' : '') : r.msg);
           refresh();
         } catch (x) { showRes(false, x.message); }
