@@ -83,7 +83,18 @@ class Api:
                 cfg["mqtt"]["password"] = "********"
             for st in cfg["streams"]:
                 st["url"] = mask(st.get("url", ""))
+            tg = cfg["storage"].get("target") or {}
+            if tg.get("password"):
+                tg["password"] = "********"
             return cfg
+        if path == "/api/events":
+            q = {k: v[0] for k, v in qs.items()}
+            return [event_json(r) for r in e.events(q)]
+        if path == "/api/storage":
+            return e.media.info()
+        if path == "/api/storage/disks":
+            from .storage import list_disks
+            return list_disks()
         if path == "/api/log":
             return list(e.logbuf)
         if path == "/api/update":
@@ -255,13 +266,31 @@ class Api:
                 raise ValueError("Bereich unbekannt")
             if sec == "mqtt" and vals.get("password") == "********":
                 vals.pop("password")
+            if sec == "storage" and isinstance(vals.get("target"), dict):
+                tg = vals["target"]
+                if tg.get("password") == "********":
+                    tg["password"] = (e.cfg.get("storage").get("target") or {}).get("password", "")
+                if tg.get("type") not in ("local", "path", "disk", "nas"):
+                    raise ValueError("Speicherart unbekannt")
             if sec == "server":
                 p = int(vals.get("port", 8096))
                 if not 1 <= p <= 65535:
                     raise ValueError("Port ungültig")
                 vals = dict(port=p)
             old = e.cfg.get("detection")
+            old_root = e.media.root
             e.cfg.update(sec, vals)
+            if sec == "storage" and "target" in vals:
+                ok, msg = e.media.apply()
+                e.media.unmount_unused()
+                if ok and old_root != e.media.root:
+                    olds = list(e.cfg.get("storage").get("old_roots") or [])
+                    if body.get("migrate"):
+                        e.media.migrate_from(old_root)
+                    if old_root not in olds and old_root != e.media.local_root:
+                        olds.append(old_root)             # alte Bilder bleiben dort lesbar
+                        e.cfg.update("storage", dict(old_roots=olds[-5:]))
+                return dict(ok=ok, msg=msg, storage=e.media.info())
             if sec == "detection":
                 new = e.cfg.get("detection")
                 if any(new.get(k) != old.get(k) for k in ("model", "model_size", "use_opencv", "accel")):
@@ -286,7 +315,15 @@ class Api:
                 if url == "********" or (old and "***" in url and url == mask(old.get("url", ""))):
                     url = old["url"] if old else ""
                 lst.append(dict(id=sid, name=(s.get("name") or sid).strip()[:60], url=url,
-                                enabled=bool(s.get("enabled", True)), detect=bool(s.get("detect", True)),
+                                enabled=bool(s.get("enabled", True)),
+                                analysis=s.get("analysis") if s.get("analysis") in ("objects", "motion", "off") else (
+                                    "objects" if s.get("detect", True) else "off"),
+                                detect=s.get("analysis", "objects") == "objects",
+                                motion_pct=max(0.01, min(50.0, float(s.get("motion_pct") or 0.5))),
+                                record=s.get("record") if s.get("record") in ("off", "motion", "objects") else "off",
+                                record_s=max(3, min(600, int(float(s.get("record_s") or 15)))),
+                                record_extend=bool(s.get("record_extend", True)),
+                                record_max_s=max(5, min(1800, int(float(s.get("record_max_s") or 60)))),
                                 fps=float(s.get("fps") or 2), width=int(s.get("width") or 640),
                                 keyframes_only=bool(s.get("keyframes_only")), transport=s.get("transport") if s.get("transport") in ("auto", "tcp", "udp") else "auto",
                                 decoder=s.get("decoder") if s.get("decoder") in ("auto", "nvdec", "gst", "ffmpeg") else "auto"))
@@ -358,8 +395,14 @@ class Api:
             return dict(ok=True, deleted=len(ids))
         if path == "/api/purge":
             n = e.purge(objects=bool(body.get("objects")), falsepos=bool(body.get("falsepos")),
-                        alarms=bool(body.get("alarms")))
+                        alarms=bool(body.get("alarms")), events=bool(body.get("events", True)))
             return dict(ok=True, deleted=n)
+        if path == "/api/events/delete":
+            ids = body.get("ids")
+            n = e.delete_events(None if ids == "alle" else [int(i) for i in ids or []])
+            return dict(ok=True, deleted=n)
+        if path == "/api/storage/test":
+            return e.media.test(body.get("target") or {})
         m = re.match(r"^/api/detection/(\d+)/false$", path)
         if m:
             did = int(m.group(1))
@@ -484,6 +527,15 @@ class Api:
         raise KeyError("unbekannt")
 
 
+def event_json(r):
+    return dict(id=r["id"], ts=r["ts"], ts_end=r["ts_end"], stream=r["stream_id"], stream_name=r["stream_name"],
+                kind=r["kind"], label=r["label"], area=r["area"],
+                box=[r["x1"], r["y1"], r["x2"], r["y2"]] if r["x1"] is not None else None,
+                img="/files/" + r["img"] if r["img"] else None,
+                clip="/clips/" + r["clip"] if r["clip"] else None, clip_dur=r["clip_dur"],
+                clip_size=r["clip_size"], recording=bool(r["rec"]))
+
+
 def mask(url):
     return re.sub(r"(://[^:/@]+:)[^@]*@", r"\1***@", url or "")
 
@@ -505,19 +557,53 @@ def make_handler(engine, api):
             self.end_headers()
             self.wfile.write(b)
 
-        def _file(self, path, cache=False):
+        def _file(self, path, cache=False, download=False):
             if not os.path.isfile(path):
                 return self._json(404, dict(error="nicht gefunden"))
             ct = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            if path.endswith(".mp4"):
+                ct = "video/mp4"
             if ct.startswith("text/") or ct.endswith("javascript"):
                 ct += "; charset=utf-8"
-            data = open(path, "rb").read()
-            self.send_response(200)
+            size = os.path.getsize(path)
+            start, end = 0, size - 1
+            rng = self.headers.get("Range")
+            m = re.match(r"bytes=(\d*)-(\d*)", rng or "")
+            partial = bool(m) and size > 0
+            if partial:
+                if m.group(1):
+                    start = int(m.group(1))
+                    if m.group(2):
+                        end = min(size - 1, int(m.group(2)))
+                elif m.group(2):
+                    start = max(0, size - int(m.group(2)))
+                if start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % size)
+                    self.end_headers()
+                    return
+            self.send_response(206 if partial else 200)
             self.send_header("Content-Type", ct)
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            if partial:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+            self.send_header("Content-Length", str(end - start + 1))
             self.send_header("Cache-Control", "max-age=86400" if cache else "no-cache")
+            if download:
+                self.send_header("Content-Disposition", 'attachment; filename="%s"' % os.path.basename(path))
             self.end_headers()
-            self.wfile.write(data)
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(262144, left))
+                    if not chunk:
+                        break
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    left -= len(chunk)
 
         def _bytes(self, data, ct, idx=None):
             self.send_response(200)
@@ -548,10 +634,15 @@ def make_handler(engine, api):
                         return self._json(403, dict(error="verboten"))
                     return self._file(p)
                 if path.startswith("/files/"):
-                    p = os.path.normpath(os.path.join(engine.snap_dir, path[7:]))
-                    if not p.startswith(engine.snap_dir):
+                    p = engine.media.find("snaps", path[7:])
+                    if not p:
                         return self._json(403, dict(error="verboten"))
                     return self._file(p, cache=True)
+                if path.startswith("/clips/"):
+                    p = engine.media.find("clips", path[7:])
+                    if not p:
+                        return self._json(403, dict(error="verboten"))
+                    return self._file(p, cache=True, download=qs.get("dl", [""])[0] == "1")
                 m = re.match(r"^/falsepos/(fp_\d+\.png)$", path)
                 if m:
                     return self._file(os.path.join(engine.data_dir, "falsepos", m.group(1)), cache=True)

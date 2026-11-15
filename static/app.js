@@ -69,6 +69,7 @@ function showTab(t) {
   if (t === 'gallery') loadGallery(true);
   if (t === 'objects') loadObjects();
   if (t === 'alarms') loadAlarms();
+  if (t === 'events') { initEvents(); loadEvents(true); }
   if (t === 'settings') loadSettings();
 }
 $$('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -221,10 +222,12 @@ async function pollLive() {
       } else if (S.liveMode === 'live') drawBoxes(ov, L);
       foot.innerHTML = '';
       const cnt = {};
-      (L ? L.boxes : []).filter(b => b.confirmed && b.age <= 0.3).forEach(b => { const g = groupOf(b.cls); cnt[g] = (cnt[g] || 0) + 1; });
+      (L ? L.boxes : []).filter(b => b.confirmed && b.age <= 0.3 && b.cls !== 'motion').forEach(b => { const g = groupOf(b.cls); cnt[g] = (cnt[g] || 0) + 1; });
       const keys = Object.keys(cnt);
-      if (!keys.length) foot.append(el('span', {class: 'muted mono small'}, L ? (L.idle ? 'keine Bewegung' : 'nichts erkannt') : 'warte auf Analyse …'));
-      keys.forEach(g => { const gg = S.meta.groups.find(x => x.id === g); foot.append(el('span', {class: 'chip'}, el('i', {style: {background: gg.color}}), gg.name + ': ' + cnt[g])); });
+      if (!keys.length) foot.append(el('span', {class: 'muted mono small'}, L ? (L.motion ? (L.idle ? 'nur Bewegungserkennung · ruhig' : 'nur Bewegungserkennung') : L.idle ? 'keine Bewegung' : 'nichts erkannt') : 'warte auf Analyse …'));
+      if (s.recording) foot.append(el('span', {class: 'chip rec-chip'}, '● REC'));
+      if (L && L.boxes.some(b => b.cls === 'motion')) foot.append(el('span', {class: 'chip'}, el('i', {style: {background: '#3ecf8e'}}), 'Bewegung'));
+      keys.forEach(g => { const gg = S.meta.groups.find(x => x.id === g); if (!gg) return; foot.append(el('span', {class: 'chip'}, el('i', {style: {background: gg.color}}), gg.name + ': ' + cnt[g])); });
       (L ? L.boxes : []).filter(b => b.named && b.age <= 0.3).forEach(b => foot.append(el('span', {class: 'chip', style: {borderColor: b.color}}, '★ ' + b.label)));
     }
   } catch (e) {}
@@ -421,19 +424,20 @@ function toggleGalSel(on) {
 
 /* Alles loeschen */
 function openPurge() {
-  const obj = el('input', {type: 'checkbox'}), fp = el('input', {type: 'checkbox'}), al = el('input', {type: 'checkbox'});
+  const obj = el('input', {type: 'checkbox'}), fp = el('input', {type: 'checkbox'}), al = el('input', {type: 'checkbox'}), ev = el('input', {type: 'checkbox', checked: true});
   const word = el('input', {type: 'text', placeholder: 'LÖSCHEN eintippen'});
   openModal(el('div', null, el('h2', null, 'Alle Erkennungen und Bilder löschen'),
     el('p', null, 'Löscht ', el('b', null, 'alle gespeicherten Erkennungen und Bilder'), ' aus der Galerie. Unbenannte, automatisch angelegte Objekte verschwinden dabei.'),
     el('div', {class: 'form', style: {gridTemplateColumns: '1fr'}},
       el('label', {class: 'chk'}, obj, 'auch alle Personen/Objekte mit Namen, Kategorie und Gelerntem löschen (kompletter Neustart)'),
       el('label', {class: 'chk'}, fp, 'auch gelernte Fehlerkennungen vergessen'),
-      el('label', {class: 'chk'}, al, 'auch den Alarmverlauf löschen')),
+      el('label', {class: 'chk'}, al, 'auch den Alarmverlauf löschen'),
+      el('label', {class: 'chk'}, ev, 'auch Bewegungsereignisse und Videos löschen')),
     el('p', {class: 'muted small'}, 'Ohne den ersten Haken bleiben benannte Personen/Objekte samt Gelerntem erhalten und werden weiter wiedererkannt.'),
     el('div', {class: 'actions'}, word,
       el('button', {class: 'btn btn-danger', onclick: async () => {
         if (word.value.trim().toUpperCase() !== 'LÖSCHEN') { toast('Zur Sicherheit „LÖSCHEN“ eintippen'); word.focus(); return; }
-        try { const r = await api('/api/purge', {body: {objects: obj.checked, falsepos: fp.checked, alarms: al.checked}});
+        try { const r = await api('/api/purge', {body: {objects: obj.checked, falsepos: fp.checked, alarms: al.checked, events: ev.checked}});
           toast(r.deleted + ' Erkennungen gelöscht'); closeModal(); refreshCurrent(); pollState(); }
         catch (e) { toast(e.message); }
       }}, 'Endgültig löschen'),
@@ -834,7 +838,33 @@ function streamEditor(list) {
       const nm = el('input', {type: 'text', value: s.name || '', placeholder: 'Name (z. B. Einfahrt)'}); nm.oninput = () => s.name = nm.value;
       const url = el('input', {type: 'text', value: s.url || '', placeholder: 'rtsp://benutzer:passwort@192.168.200.50:554/stream2'}); url.oninput = () => s.url = url.value;
       const en = el('input', {type: 'checkbox', checked: s.enabled !== false}); en.onchange = () => s.enabled = en.checked;
-      const dt = el('input', {type: 'checkbox', checked: s.detect !== false}); dt.onchange = () => s.detect = dt.checked;
+      if (!s.analysis) s.analysis = s.detect === false ? 'off' : 'objects';
+      const an = el('select', {title: 'Was in diesem Stream ausgewertet wird'}, el('option', {value: 'objects'}, 'Analyse: Objekterkennung (KI)'),
+        el('option', {value: 'motion'}, 'Analyse: nur Bewegung'), el('option', {value: 'off'}, 'Analyse: aus (nur Live-Bild)'));
+      an.value = s.analysis;
+      const mp = numIn(s.motion_pct != null ? s.motion_pct : 0.5, {min: 0.05, max: 50, step: 0.05, class: 'num'}); mp.oninput = () => s.motion_pct = +mp.value;
+      const rec = el('select', {title: 'Videoschnipsel aufnehmen'}, el('option', {value: 'off'}, 'Aufnahme: aus'),
+        el('option', {value: 'motion'}, 'Aufnahme bei Bewegung'), el('option', {value: 'objects'}, 'Aufnahme bei erkanntem Objekt'));
+      rec.value = s.record || 'off';
+      const rs = numIn(s.record_s || 15, {min: 3, max: 600, step: 1, class: 'num'}); rs.oninput = () => s.record_s = +rs.value;
+      const rx = el('input', {type: 'checkbox', checked: s.record_extend !== false}); rx.onchange = () => { s.record_extend = rx.checked; upd(); };
+      const rm = numIn(s.record_max_s || 60, {min: 5, max: 1800, step: 5, class: 'num'}); rm.oninput = () => s.record_max_s = +rm.value;
+      const mrow = el('span', {class: 'pair', title: 'Ab diesem Anteil bewegter Bildfläche gilt es als Bewegung (Rauschen, Regen und Blätter bleiben darunter)'},
+        el('span', {class: 'muted'}, 'Bewegung ab'), mp, el('span', {class: 'muted'}, '% Bildfläche'));
+      const rrow = el('div', {class: 'r small rec-row'}, rec,
+        el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Länge'), rs, el('span', {class: 'muted'}, 's')),
+        el('label', {class: 'chk', title: 'Aufnahme läuft weiter, solange sich noch etwas bewegt'}, rx, 'verlängern, solange Bewegung'),
+        el('span', {class: 'pair rmax'}, el('span', {class: 'muted'}, 'max.'), rm, el('span', {class: 'muted'}, 's')));
+      const upd = () => {
+        mrow.hidden = !(s.analysis === 'motion' || s.record === 'motion');
+        rrow.querySelectorAll('.pair, label').forEach(e => e.hidden = (s.record || 'off') === 'off');
+        rrow.querySelector('.rmax').hidden = (s.record || 'off') === 'off' || !rx.checked;
+        if (s.analysis === 'off' && s.record === 'objects') { s.record = 'motion'; rec.value = 'motion'; }
+        rec.querySelector('[value=objects]').disabled = s.analysis !== 'objects';
+      };
+      an.onchange = () => { s.analysis = an.value; s.detect = an.value === 'objects'; upd(); };
+      rec.onchange = () => { s.record = rec.value; upd(); };
+      upd();
       const kf = el('input', {type: 'checkbox', checked: !!s.keyframes_only}); kf.onchange = () => s.keyframes_only = kf.checked;
       const fps = numIn(s.fps || 2, {min: .2, max: 15, step: .2, class: 'num'}); fps.oninput = () => s.fps = +fps.value;
       const w = numIn(s.width || 640, {min: 160, max: 1920, step: 16, class: 'num'}); w.oninput = () => s.width = +w.value;
@@ -868,7 +898,9 @@ function streamEditor(list) {
         el('div', {class: 'r'}, el('span', {class: 'status-dot ' + (st.online ? 'online' : s.id ? '' : 'idle'), id: 'sdot-' + (s.id || 'n' + i)}), nm,
           el('button', {class: 'btn-mini del', onclick: () => { if (confirm('Stream „' + (s.name || '') + '“ entfernen?')) { list.splice(i, 1); draw(); } }}, 'Entfernen')),
         el('div', {class: 'r'}, url, tb),
-        el('div', {class: 'r small'}, el('label', {class: 'chk'}, en, 'aktiv'), el('label', {class: 'chk'}, dt, 'Objekterkennung'),
+        el('div', {class: 'r small'}, el('label', {class: 'chk'}, en, 'aktiv'), an, mrow),
+        rrow,
+        el('div', {class: 'r small'},
           el('span', {class: 'pair'}, el('span', {class: 'muted'}, 'Bilder/s'), fps), el('span', {class: 'pair', title: 'Analyse-Auflösung – 1280 px erkennt weit entfernte Personen viel besser (Hauptstream nutzen)'}, el('span', {class: 'muted'}, 'Breite'), w), tr, dc,
           el('label', {class: 'chk', title: 'Nur Schlüsselbilder dekodieren – spart viel Rechenleistung, Live-Bild ruckelt'}, kf, 'nur Keyframes')),
         (st.decoder || st.transport) ? el('div', {class: 'muted small'}, 'Aktiv: ' + [st.decoder, st.transport ? 'RTSP ' + st.transport : ''].filter(Boolean).join(' · ') + (st.online ? ' · ' + st.fps + ' Bilder/s' : '')) : null,
@@ -1015,7 +1047,7 @@ async function loadSettings() {
   box.append(el('div', {class: 'panel'}, el('h3', null, 'Speicher & Oberfläche'),
     el('div', {class: 'form'},
       el('label', null, 'Belegt'), usage,
-      el('label', null, 'Bilder behalten'), el('div', {class: 'row'}, md, ' Tage (0 = unbegrenzt)'),
+      el('label', null, 'Behalten'), el('div', {class: 'row'}, md, ' Tage Bilder und Videos (0 = unbegrenzt)'),
       el('label', null, 'Höchstens'), el('div', {class: 'row'}, mm, ' MB (älteste zuerst löschen)'),
       el('div', {class: 'hint'}, 'Gelernte Personen/Objekte bleiben auch nach dem Löschen alter Bilder erhalten.'),
       el('label', null, 'Alarmton'), el('label', {class: 'chk'}, snd, 'Ton in der Oberfläche abspielen'),
@@ -1024,6 +1056,7 @@ async function loadSettings() {
       el('button', {class: 'btn', onclick: async () => { await saveSection('storage', {max_days: +md.value, max_mb: +mm.value}, ' '); await saveSection('ui', {sound: snd.checked, repeat_list_min: +rl.value}); }}, 'Speichern'),
       el('button', {class: 'btn btn-ghost', onclick: async () => { await api('/api/cleanup', {body: {}}); toast('Aufräumen gestartet'); }}, 'Jetzt aufräumen'),
       el('button', {class: 'btn btn-danger', onclick: openPurge}, 'Alle Erkennungen und Bilder löschen'))));
+  box.append(storagePanel(C.storage || {}));
   /* System */
   const port = numIn(S.state.port, {min: 1, max: 65535});
   const mt = el('table', {class: 'mtab', id: 'mtab'});
@@ -1051,6 +1084,172 @@ async function loadSettings() {
   box.append(updatePanel());
   updateSettingsStatus();
 }
+/* ------------------------------------------------------------ Speicherort */
+function fmtBytes(n) {
+  if (n == null) return '?';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i < 2 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
+}
+function storagePanel(st) {
+  const t = Object.assign({type: 'local'}, st.target || {});
+  const typ = el('select', null, el('option', {value: 'local'}, 'Datenordner (interner Speicher)'),
+    el('option', {value: 'disk'}, 'USB-Festplatte / USB-Stick'), el('option', {value: 'nas'}, 'Netzwerkspeicher (NAS / Freigabe)'),
+    el('option', {value: 'path'}, 'Eigener Ordner (bereits eingebunden)'));
+  typ.value = t.type;
+  const info = el('div', {class: 'stor-info'}, '…');
+  const disk = el('select', null, el('option', {value: ''}, 'Laufwerke werden gesucht …'));
+  const rescan = el('button', {class: 'btn-mini'}, 'Neu suchen');
+  const path = el('input', {type: 'text', value: t.path || '', placeholder: '/media/usb/aufnahmen'});
+  const proto = el('select', null, el('option', {value: 'smb'}, 'SMB (Windows, Fritzbox, Synology …)'), el('option', {value: 'nfs'}, 'NFS'));
+  proto.value = t.proto || 'smb';
+  const srv = el('input', {type: 'text', value: t.server || '', placeholder: '192.168.178.10 oder nas.local'});
+  const share = el('input', {type: 'text', value: t.share || '', placeholder: 'z. B. kameras (NFS: /volume1/kameras)'});
+  const sub = el('input', {type: 'text', value: t.subdir || '', placeholder: 'Sentinel-MK1'});
+  const usr = el('input', {type: 'text', value: t.user || '', placeholder: 'leer = Gast', autocomplete: 'off'});
+  const pw = el('input', {type: 'password', value: t.password || '', autocomplete: 'new-password'});
+  const ver = el('select', null, el('option', {value: ''}, 'automatisch'), el('option', {value: '3.0'}, '3.0'), el('option', {value: '2.1'}, '2.1'),
+    el('option', {value: '2.0'}, '2.0'), el('option', {value: '1.0'}, '1.0 (alte Fritzbox/NAS)'));
+  ver.value = t.smb_version || '';
+  const mig = el('input', {type: 'checkbox'});
+  const out = el('div', {class: 'stest', hidden: true});
+  const rows = {
+    disk: [el('label', null, 'Laufwerk'), el('div', {class: 'row'}, disk, rescan),
+      el('div', {class: 'hint'}, 'Sentinel bindet das Laufwerk selbst ein (auch nach einem Neustart). ext4 ist am zuverlässigsten; exFAT/NTFS gehen ebenfalls.')],
+    path: [el('label', null, 'Ordner'), path,
+      el('div', {class: 'hint'}, 'Ordner muss existieren und dauerhaft eingebunden sein. Sentinel legt darin „Sentinel-MK1“ an.')],
+    nas: [el('label', null, 'Protokoll'), proto, el('label', null, 'Server'), srv, el('label', null, 'Freigabe'), share,
+      el('label', {class: 'smb'}, 'Benutzer'), usr, el('label', {class: 'smb'}, 'Passwort'), pw, el('label', {class: 'smb'}, 'SMB-Version'), ver,
+      el('label', null, 'Unterordner'), sub,
+      el('div', {class: 'hint'}, 'Fritzbox: Server = fritz.box, Freigabe = Name des USB-Speichers (z. B. FRITZ.NAS bzw. der Laufwerksname), Benutzer mit NAS-Recht.')]
+  };
+  const form = el('div', {class: 'form'}, el('label', null, 'Speicherort'), typ);
+  Object.values(rows).forEach(r => r.forEach(e => form.append(e)));
+  form.append(el('label', null, ''), el('label', {class: 'chk'}, mig, 'vorhandene Bilder und Videos dorthin verschieben'));
+  const show = () => {
+    Object.entries(rows).forEach(([k, r]) => r.forEach(e => e.hidden = k !== typ.value));
+    const smb = typ.value === 'nas' && proto.value === 'smb';
+    rows.nas.forEach((e, i) => { if (i >= 6 && i <= 11) e.hidden = typ.value !== 'nas' || !smb; });
+    mig.parentElement.hidden = typ.value === (st.target || {type: 'local'}).type && typ.value === 'local';
+  };
+  typ.onchange = () => { show(); if (typ.value === 'disk') scan(); };
+  proto.onchange = show;
+  const scan = async () => {
+    disk.innerHTML = ''; disk.append(el('option', {value: ''}, 'suche …'));
+    try {
+      const ds = await api('/api/storage/disks');
+      disk.innerHTML = '';
+      if (!ds.length) disk.append(el('option', {value: ''}, 'kein externes Laufwerk gefunden – anstecken und „Neu suchen“'));
+      ds.forEach(d => disk.append(el('option', {value: d.uuid, 'data-fs': d.fstype},
+        [d.label || d.model || d.dev, fmtBytes(d.size), d.fstype, d.tran ? d.tran.toUpperCase() : '', d.mount ? 'eingebunden: ' + d.mount : ''].filter(Boolean).join(' · '))));
+      if (t.uuid) disk.value = t.uuid;
+    } catch (e) { disk.innerHTML = ''; disk.append(el('option', {value: ''}, e.message)); }
+  };
+  rescan.onclick = scan;
+  const target = () => {
+    const v = {type: typ.value};
+    if (typ.value === 'disk') { v.uuid = disk.value; const o = disk.selectedOptions[0]; v.fstype = o ? o.dataset.fs || '' : ''; }
+    if (typ.value === 'path') v.path = path.value.trim();
+    if (typ.value === 'nas') Object.assign(v, {proto: proto.value, server: srv.value.trim(), share: share.value.trim(), subdir: sub.value.trim(),
+      user: usr.value.trim(), password: pw.value, smb_version: ver.value});
+    return v;
+  };
+  const showRes = (ok, msg) => { out.hidden = false; out.innerHTML = '';
+    out.append(el('div', {class: 'st ' + (ok ? 'ok' : 'bad')}, el('span', {class: 'ic'}, ok ? '✓' : '✕'), el('b', null, ok ? 'OK' : 'Fehler'), el('span', {class: 'd'}, msg))); };
+  const refresh = async () => {
+    try {
+      const i = await api('/api/storage');
+      info.innerHTML = '';
+      info.append(...[el('span', {class: 'mono'}, i.root), ' ',
+        el('span', {class: 'badge ' + (i.state === 'ersatz' ? 'warn' : 'ok')}, i.state === 'ok' ? 'aktiv' : i.state === 'ersatz' ? 'Ziel nicht erreichbar – speichert im Datenordner' : 'Datenordner'),
+        el('span', {class: 'muted'}, ' · ' + fmtBytes(i.free) + ' frei von ' + fmtBytes(i.total)),
+        i.migrating ? el('span', {class: 'muted'}, ' · Umzug: ' + i.migrating) : null,
+        i.error ? el('div', {class: 'mono small err-line'}, i.error) : null].filter(Boolean));
+    } catch (e) { info.textContent = e.message; }
+  };
+  show(); refresh(); if (t.type === 'disk') scan();
+  return el('div', {class: 'panel'}, el('h3', null, 'Speicherort für Bilder und Videos'),
+    el('div', {class: 'form', style: {marginBottom: '10px'}}, el('label', null, 'Aktuell'), info), form, out,
+    el('div', {class: 'actions'},
+      el('button', {class: 'btn btn-ghost', onclick: async e => {
+        const b = e.target; b.disabled = true; b.textContent = 'Teste …';
+        try { const r = await api('/api/storage/test', {body: {target: target()}}); showRes(r.ok, r.msg); } catch (x) { showRes(false, x.message); }
+        b.disabled = false; b.textContent = 'Testen';
+      }}, 'Testen'),
+      el('button', {class: 'btn', onclick: async e => {
+        const b = e.target; b.disabled = true;
+        try {
+          const r = await api('/api/config', {body: {section: 'storage', values: {target: target()}, migrate: mig.checked}});
+          showRes(r.ok, r.ok ? 'Übernommen: ' + r.msg + (mig.checked ? ' – Dateien werden im Hintergrund verschoben' : '') : r.msg);
+          refresh();
+        } catch (x) { showRes(false, x.message); }
+        b.disabled = false;
+      }}, 'Übernehmen')));
+}
+
+/* ------------------------------------------------------------ Ereignisse (Bewegung, Videos) */
+async function loadEvents(reset) {
+  const box = $('#evg');
+  if (reset) { box.innerHTML = ''; S.evBefore = null; }
+  const q = new URLSearchParams({limit: 60});
+  if ($('#eStream').value) q.set('stream', $('#eStream').value);
+  if ($('#eKind').value) q.set('kind', $('#eKind').value);
+  if ($('#eClip').checked) q.set('clip', '1');
+  if ($('#eDate').value) { const d0 = new Date($('#eDate').value + 'T00:00:00').getTime() / 1000; q.set('from', d0); q.set('to', d0 + 86400); }
+  if (S.evBefore) q.set('before', S.evBefore);
+  let rows;
+  try { rows = await api('/api/events?' + q); } catch (e) { return toast(e.message); }
+  if (reset && !rows.length) box.append(el('div', {class: 'empty'}, 'Noch keine Ereignisse. Bewegungen und Aufnahmen erscheinen hier, sobald ein Stream auf „nur Bewegung“ oder eine Aufnahme eingestellt ist.'));
+  rows.forEach(r => box.append(eventCard(r)));
+  if (rows.length) S.evBefore = rows[rows.length - 1].ts;
+  $('#eMore').hidden = rows.length < 60;
+}
+function eventCard(r) {
+  const img = r.img ? el('img', {src: r.img, loading: 'lazy'}) : el('div', {class: 'noimg'}, 'kein Bild');
+  const inner = el('div', {class: 'ev-in'}, img);
+  const fr = el('div', {class: 'ev-img'}, inner);
+  if (r.img) img.onload = () => {
+    // Rahmen genau auf das Bild legen (Bild wird mit Rand in 16:9 eingepasst)
+    const ar = img.naturalWidth / img.naturalHeight, box = 16 / 9;
+    if (ar >= box) { inner.style.width = '100%'; inner.style.height = (box / ar * 100) + '%'; }
+    else { inner.style.height = '100%'; inner.style.width = (ar / box * 100) + '%'; }
+  };
+  if (r.box && r.box[0] != null) inner.append(el('div', {class: 'ev-box ' + r.kind, style: {left: r.box[0] * 100 + '%', top: r.box[1] * 100 + '%',
+    width: (r.box[2] - r.box[0]) * 100 + '%', height: (r.box[3] - r.box[1]) * 100 + '%'}}));
+  if (r.clip || r.recording) fr.append(el('span', {class: 'ev-play' + (r.recording ? ' rec' : '')}, r.recording ? '● Aufnahme läuft' : '▶ ' + Math.round(r.clip_dur || 0) + ' s'));
+  return el('div', {class: 'ev-card', onclick: () => openEvent(r)}, fr,
+    el('div', {class: 'ev-meta'}, el('b', null, r.kind === 'motion' ? 'Bewegung' : r.label || 'Objekt'),
+      el('span', {class: 'muted'}, r.stream_name), el('span', {class: 'muted mono small'}, fmtTime(r.ts, true))));
+}
+function openEvent(r) {
+  const media = r.clip ? el('video', {src: r.clip, controls: true, autoplay: true, playsinline: true, poster: r.img || '', class: 'ev-video'})
+    : r.img ? el('img', {src: r.img, class: 'ev-video'}) : el('div', {class: 'muted'}, 'kein Bild');
+  const dur = r.ts_end && r.ts_end > r.ts ? Math.round(r.ts_end - r.ts) + ' s' : '–';
+  openModal(el('div', null, el('h2', null, (r.kind === 'motion' ? 'Bewegung' : r.label || 'Objekt') + ' · ' + r.stream_name), media,
+    r.clip ? el('p', {class: 'muted small'}, 'Spielt das Video nicht ab (H.265-Kameras in manchen Browsern), „Video herunterladen“ nutzen.') : null,
+    el('div', {class: 'kv'}, el('span', null, 'Zeit'), el('span', null, fmtTime(r.ts, 'full')),
+      el('span', null, 'Dauer der Bewegung'), el('span', null, dur),
+      r.kind === 'motion' ? el('span', null, 'bewegte Fläche') : null, r.kind === 'motion' ? el('span', null, 'bis ' + (r.area || 0).toFixed(1) + ' %') : null,
+      el('span', null, 'Video'), el('span', null, r.clip ? Math.round(r.clip_dur || 0) + ' s · ' + fmtBytes(r.clip_size) : r.recording ? 'Aufnahme läuft noch …' : 'keins')),
+    el('div', {class: 'actions'},
+      r.clip ? el('a', {class: 'btn', href: r.clip + '?dl=1'}, 'Video herunterladen') : null,
+      r.img ? el('a', {class: 'btn btn-ghost', href: r.img, target: '_blank'}, 'Bild öffnen') : null,
+      el('button', {class: 'btn btn-danger', onclick: async () => {
+        if (!confirm('Ereignis samt Bild und Video löschen?')) return;
+        await api('/api/events/delete', {body: {ids: [r.id]}}); closeModal(); loadEvents(true);
+      }}, 'Löschen'))));
+}
+function initEvents() {
+  $('#eStream').innerHTML = ''; $('#eStream').append(el('option', {value: ''}, 'Alle Streams'));
+  (S.state.streams || []).forEach(x => $('#eStream').append(el('option', {value: x.id}, x.name)));
+  ['#eStream', '#eKind', '#eClip', '#eDate'].forEach(k => $(k).onchange = () => loadEvents(true));
+  $('#eMore').onclick = () => loadEvents(false);
+  $('#eDel').onclick = async () => {
+    if (!confirm('Alle Ereignisse samt Bildern und Videos löschen?')) return;
+    const r = await api('/api/events/delete', {body: {ids: 'alle'}}); toast(r.deleted + ' Ereignisse gelöscht'); loadEvents(true);
+  };
+}
+
 /* Gelernte Fehlerkennungen */
 function falsePosPanel() {
   const list = el('div', {class: 'fp-list'});
@@ -1216,7 +1415,7 @@ async function updateSettingsStatus() {
   let t = 'live';
   try { t = localStorage.getItem('sentinel_tab') || 'live'; } catch (e) {}
   if (location.hash.length > 1) t = location.hash.slice(1);
-  showTab(['live', 'gallery', 'objects', 'alarms', 'settings'].includes(t) ? t : 'live');
+  showTab(['live', 'gallery', 'objects', 'events', 'alarms', 'settings'].includes(t) ? t : 'live');
   setInterval(pollState, 2000);
   setInterval(pollLive, 900);
 })();

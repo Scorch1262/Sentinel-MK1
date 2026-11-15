@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS alarm_events(
   object_name TEXT, cls TEXT, count INTEGER, streams TEXT, det_id INTEGER, ack INTEGER DEFAULT 0, text TEXT);
 CREATE INDEX IF NOT EXISTS ev_ts ON alarm_events(ts);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, ts_end REAL, stream_id TEXT, stream_name TEXT,
+  kind TEXT, label TEXT, area REAL, x1 REAL, y1 REAL, x2 REAL, y2 REAL, img TEXT,
+  clip TEXT, clip_dur REAL, clip_size INTEGER, rec INTEGER DEFAULT 0, det_id INTEGER);
+CREATE INDEX IF NOT EXISTS evt_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS evt_stream ON events(stream_id, ts);
 CREATE TABLE IF NOT EXISTS false_pos(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, stream_id TEXT, stream_name TEXT, cls TEXT, ckey TEXT,
   x1 REAL, y1 REAL, x2 REAL, y2 REAL, app BLOB, crop TEXT);

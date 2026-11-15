@@ -1,5 +1,20 @@
 # Änderungen
 
+## 2.4.0
+- Analyse je Stream wählbar: Objekterkennung (KI), nur Bewegung (ohne KI) oder aus
+- Bewegungserkennung als eigene Funktion: Ereignisse mit Bild und markiertem Bereich, Schwelle in
+  % der Bildfläche je Stream, MQTT `sentinel/motion`
+- Videoschnipsel je Stream: Aufnahme bei Bewegung oder bei erkanntem Objekt, Länge einstellbar,
+  verlängern solange Bewegung (mit Höchstlänge); H.264/H.265 ohne Umrechnen, MJPEG → H.264;
+  MQTT `sentinel/clip`
+- Neuer Tab „Ereignisse“: Bewegungen und Aufnahmen mit Filter, Videoplayer, Download, Löschen
+- Speicherort für Bilder und Videos: Datenordner, USB-Festplatte (wird selbst eingebunden),
+  Netzwerkspeicher (SMB/NFS) oder eigener Ordner – mit Test, Umzug des Bestands und automatischem
+  Ausweichen auf den Datenordner, wenn das Ziel nicht erreichbar ist
+- Aufräumen nach Tagen/MB berücksichtigt auch Videos; „Alles löschen“ optional mit Ereignissen
+- Videos mit HTTP-Range (Vorspulen im Browser, iPhone)
+- Installer/Update: cifs-utils, nfs-common, ntfs-3g, exFAT-Pakete
+
 ## 2.3.1
 - GPU-Engine-Bau auf dem Jetson Nano 2GB: Streams und KI-Modelle werden für den einmaligen Bau
   angehalten, trtexec baut speichersparend (ohne cuBLAS/cuDNN-Taktiken) und versucht es bei

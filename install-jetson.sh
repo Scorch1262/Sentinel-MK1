@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=2.3.1
+VERSION=2.4.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -122,7 +122,8 @@ fi
 # ---------------------------------------------------------------------------
 log "Installiere Pakete (apt) ..."
 PKGS="python3 python3-numpy ffmpeg curl libopenblas-base gstreamer1.0-tools gstreamer1.0-plugins-base
-      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav"
+      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      cifs-utils nfs-common ntfs-3g exfat-fuse exfat-utils"
 # shellcheck disable=SC2086
 apt-get install -y -q --no-install-recommends $PKGS >/dev/null 2>&1 || {
     log "WARNUNG: nicht alle Pakete installierbar - einzeln:"

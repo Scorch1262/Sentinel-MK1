@@ -15,6 +15,8 @@ from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, Nan
 from .models import DETECTORS, ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
+from .recorder import Recorder
+from .storage import MediaStore
 from .streams import StreamWorker, decoder_info, find_ffmpeg
 
 
@@ -181,18 +183,39 @@ class IdentityIndex:
                 self.objs[oid]["cls"] = cls
 
 
+def stream_mode(sc):
+    """Analyse eines Streams: objects (KI-Objekterkennung) | motion (nur Bewegung) | off"""
+    m = sc.get("analysis")
+    if m in ("objects", "motion", "off"):
+        return m
+    return "objects" if sc.get("detect", True) else "off"
+
+
 class Engine:
+    @property
+    def snap_dir(self):
+        """aktiver Ordner fuer neue Bilder (Datenordner, Festplatte oder Netzwerkspeicher)"""
+        return self.media.snap_dir
+
+    def snap_path(self, rel):
+        """vorhandenes Bild in einem der Speicherorte finden"""
+        return self.media.find("snaps", rel)
+
     def __init__(self, base_dir, config, version):
         self.base = base_dir
         self.cfg = config
         self.version = version
         self.data_dir = os.path.join(base_dir, "data")
-        self.snap_dir = os.path.join(self.data_dir, "snaps")
         self.avatar_dir = os.path.join(self.data_dir, "avatars")
-        for d in (self.data_dir, self.snap_dir, self.avatar_dir):
+        for d in (self.data_dir, os.path.join(self.data_dir, "snaps"), self.avatar_dir):
             os.makedirs(d, exist_ok=True)
         self.logbuf = collections.deque(maxlen=300)
+        self.media = MediaStore(config, self.data_dir, self.log)
+        self.recorder = Recorder(self.log)
+        self.mot = {}               # stream_id -> Zustand der Bewegungserkennung
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
+        # Aufnahmen, die beim letzten Beenden noch liefen, sind unvollstaendig -> Kennzeichen zuruecksetzen
+        self.store.x("UPDATE events SET rec=0 WHERE rec=1")
         self.index = IdentityIndex(self.store)
         self.models = ModelManager(os.path.join(self.data_dir, "models"), self.log, wanted=self.wanted_models)
         self.fp_cache = None        # gelernte Fehlerkennungen (Liste), None = neu laden
@@ -439,9 +462,7 @@ class Engine:
         while not self.stop_ev.is_set():
             try:
                 d = self.cfg.get("detection")
-                if not d.get("enabled", True) or self.det is None:
-                    time.sleep(1)
-                    continue
+                obj_ok = d.get("enabled", True) and self.det is not None
                 with self.lock:
                     ws = list(self.workers.values())
                 if not ws:
@@ -450,17 +471,23 @@ class Engine:
                 did = False
                 for k in range(len(ws)):
                     w = ws[(rr + k) % len(ws)]
-                    if not self.stream_cfg(w.id).get("detect", True):
+                    sc = self.stream_cfg(w.id)
+                    mode = stream_mode(sc)
+                    if mode == "off" or (mode == "objects" and not obj_ok):
                         continue
                     raw = w.latest_raw()
                     if raw is None or time.time() - raw[1] > 10:
                         continue
                     lp = self.last_proc.get(w.id)
-                    if lp and (lp[0] == raw[0] or time.time() - lp[1] < float(d.get("interval_s", 1.0))):
+                    iv = float(d.get("interval_s", 1.0)) if mode == "objects" else float(sc.get("motion_interval_s", 0.5))
+                    if lp and (lp[0] == raw[0] or time.time() - lp[1] < iv):
                         continue
                     rr = (rr + k + 1) % len(ws)
                     self.last_proc[w.id] = (raw[0], time.time())
-                    self._process(w, raw, d)
+                    if mode == "motion":
+                        self._process_motion(w, raw, d, sc)
+                    else:
+                        self._process(w, raw, d)
                     did = True
                     break
                 if not did:
@@ -477,6 +504,8 @@ class Engine:
         H, W = frame.shape[:2]
         tracks = self.tracks.setdefault(w.id, [])
         self._update_background(w.id, frame, d)
+        if (self.stream_cfg(w.id).get("record") or "off") == "motion":
+            self._motion_step(w, idx, W, H, now, self.stream_cfg(w.id))
         # Bewegungsfilter: ruhige Szene -> keine Analyse (vorhandene Objekte bleiben bestehen).
         # Massgeblich ist die bewegte Flaeche gegenueber dem Hintergrundmodell - auch eine kleine,
         # weit entfernte Person loest die Analyse aus (frueher: mittlerer Bildunterschied).
@@ -804,6 +833,7 @@ class Engine:
         if face is not None:
             self.index.add(oid, t.cls, "face", face, det_id, now, ms)
         self._after_detection(oid, det_id, now, sighting=True, has_face=face is not None)
+        self._object_event(w, t, det_id, now)
 
     def _follow_up(self, w, t, frame, idx, now, d):
         icfg = self.cfg.get("identity")
@@ -894,8 +924,8 @@ class Engine:
     def _set_avatar(self, oid, det_id):
         r = self.store.q("SELECT crop FROM detections WHERE id=?", (det_id,), one=True)
         if r and r["crop"]:
-            src = os.path.join(self.snap_dir, r["crop"])
-            if os.path.exists(src):
+            src = self.snap_path(r["crop"])
+            if src and os.path.exists(src):
                 shutil.copyfile(src, os.path.join(self.avatar_dir, "%d.png" % oid))
                 self.store.x("UPDATE objects SET avatar_det=? WHERE id=?", (det_id, oid))
 
@@ -935,6 +965,191 @@ class Engine:
     # ------------------------------------------------------------------
     # Live-Anzeige
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Bewegungserkennung, Ereignisse und Videoaufnahmen
+    # ------------------------------------------------------------------
+    def _process_motion(self, w, raw, d, sc):
+        """Stream im Modus 'nur Bewegung': keine KI, nur Hintergrundvergleich."""
+        idx, ts_frame, frame = raw
+        H, W = frame.shape[:2]
+        now = time.time()
+        self._update_background(w.id, frame, d)
+        st = self._motion_step(w, idx, W, H, now, sc)
+        boxes = []
+        if st and st.get("active") and st.get("box"):
+            b = st["box"]
+            boxes.append(dict(x1=b[0], y1=b[1], x2=b[2], y2=b[3], cls="motion", label="Bewegung %.1f %%" % st["area"],
+                              color="#3ecf8e", score=1.0, confirmed=True, obj=None, named=False, cat=None,
+                              face=False, age=0))
+        self.live[w.id] = dict(ts=now, w=W, h=H, boxes=boxes, idle=not boxes, motion=True)
+
+    def _motion_region(self, m):
+        """Bewegte Flaeche in % und umschliessender Rahmen (relativ) der groessten Bewegung."""
+        if m is None or not m.any():
+            return 0.0, None
+        area = float(m.mean()) * 100.0
+        mm = m
+        try:
+            import cv2
+            k = np.ones((3, 3), np.uint8)
+            mm = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, k).astype(bool)   # Rauschen weg
+            if not mm.any():
+                return area, None
+        except Exception:
+            pass
+        ys, xs = np.nonzero(mm)
+        mh, mw = m.shape
+        x1, x2 = np.percentile(xs, [2, 98])
+        y1, y2 = np.percentile(ys, [2, 98])
+        return area, (float(x1) / mw, float(y1) / mh, float(x2 + 1) / mw, float(y2 + 1) / mh)
+
+    def _motion_step(self, w, idx, W, H, now, sc):
+        """Bewegung auswerten: Ereignis anlegen (mit Bild), Aufnahme starten/verlaengern."""
+        st = self.mot.setdefault(w.id, dict(active=False, hits=0, last=0.0, event=None, area=0.0, box=None))
+        area, box = self._motion_region(self.motion.get(w.id))
+        thr = float(sc.get("motion_pct", 0.5) or 0.5)
+        moving = area >= thr and box is not None
+        st["area"], st["box"] = area, box
+        if moving:
+            st["hits"] += 1
+            st["last"] = now
+            self.recorder.touch(w.id)
+        else:
+            st["hits"] = 0
+        need = max(1, int(sc.get("motion_frames", 2) or 2))
+        if not st["active"] and st["hits"] >= need and now - st.get("ended", 0) >= float(sc.get("motion_cooldown_s", 10)):
+            st["active"] = True
+            st["event"] = self._new_event(w, idx, now, "motion", "Bewegung", area, box, sc)
+        elif st["active"]:
+            if moving and st["event"]:
+                self.store.x("UPDATE events SET ts_end=?, area=MAX(area, ?) WHERE id=?", (now, area, st["event"]))
+                # Dauerbewegung: Aufnahme hat ihre Hoechstlaenge erreicht -> naechstes Ereignis mit neuem Video
+                if (sc.get("record") or "off") == "motion" and not self.recorder.busy(w.id) and \
+                        self.store.q("SELECT 1 FROM events WHERE id=? AND rec=0 AND clip IS NOT NULL",
+                                     (st["event"],), one=True):
+                    st["event"] = self._new_event(w, idx, now, "motion", "Bewegung", area, box, sc)
+            if now - st["last"] > float(sc.get("motion_quiet_s", 8)):
+                st["active"] = False
+                st["ended"] = now
+                st["event"] = None
+        return st
+
+    def _object_event(self, w, t, det_id, now):
+        """Neue Sichtung in einem Stream mit 'Aufnahme bei Objekt'."""
+        sc = self.stream_cfg(w.id)
+        if (sc.get("record") or "off") != "objects":
+            return
+        r = self.store.q("SELECT img, x1, y1, x2, y2 FROM detections WHERE id=?", (det_id,), one=True)
+        label = DE.get(t.cls, t.cls)
+        if t.obj:
+            label = self.object_label(t.obj) or label
+        if self.recorder.busy(w.id):
+            self.recorder.touch(w.id)
+            return
+        eid = self.store.x(
+            "INSERT INTO events(ts, ts_end, stream_id, stream_name, kind, label, area, x1, y1, x2, y2, img, det_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (now, now, w.id, w.cfg.get("name", w.id), "object", label, 0, r["x1"] if r else None,
+             r["y1"] if r else None, r["x2"] if r else None, r["y2"] if r else None, r["img"] if r else None, det_id))
+        self._start_recording(w, eid, now, sc)
+
+    def _new_event(self, w, idx, now, kind, label, area, box, sc):
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        stamp = time.strftime("%H%M%S", time.localtime(now)) + "_%03d" % int((now % 1) * 1000)
+        img_rel = None
+        jpg = w.jpeg_for(idx) or w.latest_jpeg()
+        if isinstance(jpg, tuple):
+            jpg = jpg[-1]
+        if jpg:
+            try:
+                img_rel = "%s/%s_%s_bewegung.jpg" % (day, stamp, w.id)
+                p = os.path.join(self.snap_dir, img_rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(jpg)
+            except Exception as e:
+                self.log("Ereignisbild: %s" % e)
+                img_rel = None
+        b = box or (None, None, None, None)
+        eid = self.store.x(
+            "INSERT INTO events(ts, ts_end, stream_id, stream_name, kind, label, area, x1, y1, x2, y2, img) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (now, now, w.id, w.cfg.get("name", w.id), kind, label, area, b[0], b[1], b[2], b[3], img_rel))
+        if (sc.get("record") or "off") == "motion":
+            self._start_recording(w, eid, now, sc)
+        if self.cfg.get("mqtt").get("enabled"):
+            self._mqtt_async("motion", dict(event=eid, stream=w.id, stream_name=w.cfg.get("name", w.id),
+                                            area=round(area, 2), ts=now))
+        return eid
+
+    def _start_recording(self, w, eid, now, sc):
+        if self.recorder.busy(w.id):
+            return False
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        rel = "%s/%s_%s.mp4" % (day, time.strftime("%H%M%S", time.localtime(now)), w.id)
+        codec = (w.probed[0] if getattr(w, "probed", None) else None) or ""
+        ok = self.recorder.start(sc, codec, getattr(w, "proto", "tcp"), os.path.join(self.media.clip_dir, rel), rel,
+                                 eid, self._recording_done)
+        if ok:
+            self.store.x("UPDATE events SET rec=1 WHERE id=?", (eid,))
+        return ok
+
+    def _recording_done(self, eid, rel, dur, size):
+        self.store.x("UPDATE events SET rec=0, clip=?, clip_dur=?, clip_size=? WHERE id=?",
+                     (rel, round(dur, 1) if rel else None, size or None, eid))
+        if rel and self.cfg.get("mqtt").get("enabled"):
+            self._mqtt_async("clip", dict(event=eid, clip="/clips/" + rel, duration=round(dur, 1)))
+
+    def _img_shared(self, rel, det_id=None, event_id=None):
+        """Wird das Bild noch von einer anderen Erkennung bzw. einem Ereignis benutzt?"""
+        if self.store.q("SELECT 1 FROM detections WHERE (img=? OR crop=?) AND id<>? LIMIT 1",
+                        (rel, rel, det_id or -1), one=True):
+            return True
+        return bool(self.store.q("SELECT 1 FROM events WHERE img=? AND id<>? LIMIT 1", (rel, event_id or -1), one=True))
+
+    def delete_events(self, ids):
+        """Ereignisse samt Bild und Video loeschen (ids=None: alle)."""
+        if ids is None:
+            rows = self.store.q("SELECT * FROM events")
+        else:
+            ids = [int(i) for i in ids]
+            if not ids:
+                return 0
+            rows = self.store.q("SELECT * FROM events WHERE id IN (%s)" % ",".join(str(i) for i in ids))
+        for r in rows:
+            if r["rec"]:
+                continue                      # laeuft noch
+            if r["clip"]:
+                self.media.remove("clips", r["clip"])
+            if r["img"] and not self._img_shared(r["img"], event_id=r["id"]):
+                self.media.remove("snaps", r["img"])
+            self.store.x("DELETE FROM events WHERE id=?", (r["id"],))
+        return len(rows)
+
+    def events(self, q):
+        sql = "SELECT * FROM events WHERE 1=1"
+        args = []
+        if q.get("stream"):
+            sql += " AND stream_id=?"
+            args.append(q["stream"])
+        if q.get("kind"):
+            sql += " AND kind=?"
+            args.append(q["kind"])
+        if q.get("clip") == "1":
+            sql += " AND (clip IS NOT NULL OR rec=1)"
+        if q.get("before"):
+            sql += " AND ts<?"
+            args.append(float(q["before"]))
+        if q.get("from"):
+            sql += " AND ts>=?"
+            args.append(float(q["from"]))
+        if q.get("to"):
+            sql += " AND ts<=?"
+            args.append(float(q["to"]))
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(min(500, int(q.get("limit") or 120)))
+        return self.store.q(sql, tuple(args))
+
     def _publish_live(self, sid, W, H, tracks, now, idle=False):
         names = {}
         oids = [t.obj for t in tracks if t.obj]
@@ -1011,15 +1226,20 @@ class Engine:
             self._set_avatar(target, rows[0]["id"])
         return target
 
-    def purge(self, objects=False, falsepos=False, alarms=False):
+    def purge(self, objects=False, falsepos=False, alarms=False, events=True):
         """Alle Erkennungen und Bilder loeschen. objects: auch Personen/Objekte (Namen, Lernbeispiele);
         sonst bleiben benannte bzw. einsortierte Objekte mit ihrem Gelernten erhalten."""
         n = self.store.q("SELECT COUNT(*) n FROM detections", one=True)["n"]
         for tl in self.tracks.values():
             del tl[:]
         self.live = {}
-        shutil.rmtree(self.snap_dir, ignore_errors=True)
-        os.makedirs(self.snap_dir, exist_ok=True)
+        keep = set(r["img"] for r in self.store.q("SELECT img FROM events WHERE img IS NOT NULL"))
+        for r in self.store.q("SELECT img, crop FROM detections"):
+            for k in ("img", "crop"):
+                if r[k] and r[k] not in keep:
+                    self.media.remove("snaps", r[k])
+        if events:
+            self.delete_events(None)
         self.store.xmany([("DELETE FROM detections", ()),
                           ("DELETE FROM samples WHERE det_id IS NOT NULL AND pinned=0 AND neg=0 AND object_id IN "
                            "(SELECT id FROM objects WHERE name='' AND category_id IS NULL)", ())])
@@ -1067,9 +1287,10 @@ class Engine:
         now = time.time()
         for r in rows:
             crop_rel = None
-            if r["crop"] and os.path.exists(os.path.join(self.snap_dir, r["crop"])):
+            src = self.snap_path(r["crop"]) if r["crop"] else None
+            if src and os.path.exists(src):
                 crop_rel = "fp_%d.png" % r["id"]
-                shutil.copyfile(os.path.join(self.snap_dir, r["crop"]), os.path.join(fdir, crop_rel))
+                shutil.copyfile(src, os.path.join(fdir, crop_rel))
             self.store.x("INSERT INTO false_pos(ts, stream_id, stream_name, cls, ckey, x1, y1, x2, y2, app, crop) "
                          "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                          (now, r["stream_id"], r["stream_name"], r["cls"], track_key(r["cls"]), r["x1"], r["y1"],
@@ -1160,11 +1381,8 @@ class Engine:
         if not r:
             return
         for k in ("img", "crop"):
-            if r[k]:
-                try:
-                    os.remove(os.path.join(self.snap_dir, r[k]))
-                except OSError:
-                    pass
+            if r[k] and not self._img_shared(r[k], det_id):
+                self.media.remove("snaps", r[k])
         self.store.x("DELETE FROM detections WHERE id=?", (det_id,))
         self.store.x("DELETE FROM samples WHERE det_id=? AND neg=0 AND pinned=0", (det_id,))
         if recount and r["object_id"]:
@@ -1337,6 +1555,7 @@ class Engine:
                 for sid in list(self.live):
                     if sid not in self.workers:
                         self.live.pop(sid, None)
+                self.media.check()
                 if self.cfg.get("mqtt").get("enabled"):
                     self.mqtt.ping()
                 if now - last_clean > 3600:
@@ -1346,14 +1565,7 @@ class Engine:
                 self.log("Wartung: %s" % e)
 
     def disk_usage(self):
-        total = 0
-        for root, _, files in os.walk(self.snap_dir):
-            for f in files:
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-        return total
+        return self.media.usage()
 
     def cleanup(self):
         st = self.cfg.get("storage")
@@ -1364,29 +1576,43 @@ class Engine:
             for r in self.store.q("SELECT id FROM detections WHERE ts<? ", (cut,)):
                 self.delete_detection(r["id"], recount=False)
                 removed += 1
+        if days > 0:
+            old = [r["id"] for r in self.store.q("SELECT id FROM events WHERE ts<?", (cut,))]
+            if old:
+                self.delete_events(old)
+                removed += len(old)
         cap = float(st.get("max_mb", 2000) or 0) * 1024 * 1024
         if cap > 0:
             used = self.disk_usage()
             while used > cap:
-                rows = self.store.q("SELECT id FROM detections ORDER BY ts LIMIT 200")
-                if not rows:
+                # aelteste Eintraege zuerst - Erkennungen und Ereignisse (Videos) gemeinsam
+                d1 = self.store.q("SELECT id, ts FROM detections ORDER BY ts LIMIT 100")
+                e1 = self.store.q("SELECT id, ts FROM events ORDER BY ts LIMIT 20")
+                if not d1 and not e1:
                     break
-                for r in rows:
-                    self.delete_detection(r["id"], recount=False)
-                    removed += 1
+                if e1 and (not d1 or e1[0]["ts"] <= d1[-1]["ts"]):
+                    self.delete_events([r["id"] for r in e1])
+                    removed += len(e1)
+                else:
+                    for r in d1:
+                        self.delete_detection(r["id"], recount=False)
+                        removed += 1
                 used = self.disk_usage()
         # leere Tagesordner entfernen
-        for d in os.listdir(self.snap_dir):
-            p = os.path.join(self.snap_dir, d)
-            if os.path.isdir(p) and not os.listdir(p):
-                try:
-                    os.rmdir(p)
-                except OSError:
-                    pass
+        for root in self.media.roots():
+            for kind in ("snaps", "clips"):
+                base = os.path.join(root, kind)
+                for d in (os.listdir(base) if os.path.isdir(base) else []):
+                    p = os.path.join(base, d)
+                    if os.path.isdir(p) and not os.listdir(p) and d != time.strftime("%Y-%m-%d"):
+                        try:
+                            os.rmdir(p)
+                        except OSError:
+                            pass
         cut_ev = time.time() - 90 * 86400
         self.store.x("DELETE FROM alarm_events WHERE ts<?", (cut_ev,))
         if removed:
-            self.log("Aufräumen: %d alte Bilder entfernt" % removed)
+            self.log("Aufräumen: %d alte Bilder/Ereignisse entfernt" % removed)
             self.store.x("UPDATE objects SET avatar_det=NULL WHERE avatar_det NOT IN (SELECT id FROM detections)")
 
     # ------------------------------------------------------------------
@@ -1398,6 +1624,9 @@ class Engine:
                        decoder="", transport="", online=False,
                        error="angehalten, solange die GPU-Engine gebaut wird (einmalig, einige Minuten)")
                   for s in self.cfg.get("streams") if s.get("enabled", True)]
+        for x in ws:
+            x["recording"] = self.recorder.busy(x["id"])
+            x["analysis"] = stream_mode(self.stream_cfg(x["id"]))
         dm = list(self.det_ms)
         fm = list(self.face_ms)
         load = None
@@ -1428,6 +1657,10 @@ class Engine:
 
     def shutdown(self):
         self.stop_ev.set()
+        try:
+            self.recorder.stop_all()     # laufende Aufnahmen sauber abschliessen
+        except Exception:
+            pass
         if self.fan is not None:
             self.fan.stop()          # Regelung an den Jetson zurueckgeben
         for w in list(self.workers.values()):

@@ -24,6 +24,7 @@
     <button data-tab="live" class="on">Live</button>
     <button data-tab="gallery">Galerie</button>
     <button data-tab="objects">Objekte</button>
+    <button data-tab="events">Ereignisse</button>
     <button data-tab="alarms">Alarme<span class="pill" id="pill" hidden>0</span></button>
     <button data-tab="settings">Einstellungen</button>
   </nav>
@@ -71,6 +72,19 @@
       <button class="btn btn-ghost" id="oCats">Kategorien verwalten</button>
     </div>
     <div class="olist" id="olist"></div>
+  </section>
+
+  <section id="tab-events" hidden>
+    <div class="bar">
+      <select id="eStream"><option value="">Alle Streams</option></select>
+      <select id="eKind"><option value="">Bewegung + Objekte</option><option value="motion">nur Bewegung</option><option value="object">nur Objekt-Aufnahmen</option></select>
+      <input type="date" id="eDate" title="Tag">
+      <label class="chk"><input type="checkbox" id="eClip"> nur mit Video</label>
+      <div class="grow"></div>
+      <button class="btn btn-danger" id="eDel">Alle löschen</button>
+    </div>
+    <div class="evgrid" id="evg"></div>
+    <div class="more"><button class="btn btn-ghost" id="eMore" hidden>Weitere laden</button></div>
   </section>
 
   <section id="tab-alarms" hidden>

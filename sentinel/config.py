@@ -5,7 +5,7 @@ import os
 import threading
 
 DEFAULTS = {
-    "config_version": 4,
+    "config_version": 5,
     "server": {"host": "0.0.0.0", "port": 8096},
     "streams": [],
     "detection": {
@@ -44,7 +44,8 @@ DEFAULTS = {
         "appearance_window_other_h": 72,
         "max_samples": 40,
     },
-    "storage": {"max_days": 30, "max_mb": 8000},
+    # target: Speicherort fuer Bilder/Videos (local | path | disk | nas), siehe storage.py
+    "storage": {"max_days": 30, "max_mb": 8000, "target": {"type": "local"}, "old_roots": []},
     "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "user": "", "password": "",
              "prefix": "sentinel", "publish_detections": False},
     "ui": {"sound": True, "repeat_list_min": 2, "live_mode": "live"},
@@ -65,7 +66,7 @@ def _merge(base, over):
     return out
 
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 
 def migrate(data):
@@ -83,6 +84,11 @@ def migrate(data):
         d.setdefault("model", "auto")
     if v < 3:
         d.setdefault("require_motion", ["person", "animal", "bike"])
+    if v < 5:
+        # v2.4.0: Analyse je Stream (objects | motion | off) statt nur an/aus; Aufnahme je Stream
+        for st in data.get("streams") or []:
+            st.setdefault("analysis", "objects" if st.get("detect", True) else "off")
+            st.setdefault("record", "off")
     if v < 4:
         # v2.2.0: RTSP-Transport automatisch (TCP, bei Problemen UDP) - frueher fest TCP voreingestellt
         for st in data.get("streams") or []:

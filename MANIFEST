@@ -32,3 +32,6 @@ static/app.js
 static/icon.png
 static/icon.svg
 static/index.html
+sentinel/storage.py
+sentinel/recorder.py
+update_hook.py

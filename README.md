@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.3.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.4.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -17,6 +17,13 @@ auftaucht.
 - **Mehrere RTSP-Streams** gleichzeitig (auch HTTP/MJPEG oder Videodateien – alles, was ffmpeg öffnet).
   Pro Stream einstellbar: Bilder/s, Bildbreite, RTSP über TCP/UDP/automatisch, „nur Keyframes“ (spart Rechenleistung).
   „Testen“ prüft eine Kamera direkt vom Jetson aus (siehe *Kamera wird nicht angezeigt*).
+- **Analyse je Stream wählbar:** *Objekterkennung (KI)*, *nur Bewegung* (ohne KI – braucht kaum
+  Rechenleistung) oder *aus* (nur Live-Bild).
+- **Videoschnipsel je Stream:** Aufnahme *bei Bewegung* oder *bei erkanntem Objekt*, Länge
+  einstellbar, auf Wunsch verlängert, solange sich etwas bewegt (mit Höchstlänge). Ansehen und
+  herunterladen im Tab **Ereignisse** (siehe *Bewegung und Videoaufnahmen*).
+- **Speicherort wählbar:** Bilder und Videos im Datenordner, auf einer **USB-Festplatte** oder auf
+  einem **Netzwerkspeicher** (SMB/NFS – NAS, Windows-Freigabe, Fritzbox).
 - **Automatische Erkennung** (80 Arten, NanoDet-Plus) mit Rahmenfarben je Gruppe:
 
   | Gruppe | Farbe | Arten |
@@ -52,7 +59,7 @@ auftaucht.
 - Live-Ansicht: flüssiges Live-Bild oder exakt das analysierte Bild, Vollbild per Doppelklick,
   Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
 - **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit).
-- **Speicherverwaltung:** Bilder nach x Tagen bzw. ab x MB automatisch löschen – gelernte
+- **Speicherverwaltung:** Bilder und Videos nach x Tagen bzw. ab x MB automatisch löschen – gelernte
   Personen/Objekte bleiben erhalten.
 - Alle Einstellungen in `config.json` (gut lesbar), Daten in `data/` – beides bleibt bei Updates erhalten.
 
@@ -209,6 +216,49 @@ Gegen Fehltreffer (z. B. „Personen“ in Autoschatten) arbeiten mehrere Stufen
 Im Live-Bild erscheinen nur noch bestätigte Objekte. Unter Einstellungen → Objekterkennung zeigt
 „Verworfen“, wie oft jede Stufe seit dem Start eingegriffen hat.
 
+## Bewegung und Videoaufnahmen
+
+Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
+
+| Feld | Möglichkeiten |
+|---|---|
+| **Analyse** | *Objekterkennung (KI)* · *nur Bewegung* · *aus* |
+| **Aufnahme** | *aus* · *bei Bewegung* · *bei erkanntem Objekt* (nur mit Objekterkennung) |
+
+- **Nur Bewegung** vergleicht jedes Bild mit einem selbst lernenden Hintergrundbild. Gemeldet wird,
+  wenn sich mindestens der eingestellte Anteil der Bildfläche bewegt (Standard 0,5 %). Helligkeits-
+  wechsel des ganzen Bildes (Wolken, IR-Umschaltung) werden herausgerechnet. Jede Bewegung wird ein
+  **Ereignis** mit Bild und markiertem Bereich.
+- **Aufnahme:** Sentinel öffnet dafür eine eigene Verbindung zur Kamera. H.264/H.265 werden ohne
+  Umrechnen in MP4 gespeichert (praktisch keine Rechenlast), MJPEG-Kameras werden in H.264
+  umgerechnet. **Länge** = Mindestlänge; mit *verlängern, solange Bewegung* läuft die Aufnahme
+  weiter, bis 5 s Ruhe sind oder die **Höchstlänge** erreicht ist. Bei Dauerbewegung folgt direkt
+  der nächste Schnipsel.
+- Die Aufnahme beginnt mit dem Erkennen (ca. 1–2 s Verzögerung, kein Vorlauf).
+- Der Tab **Ereignisse** zeigt alle Bewegungen und Aufnahmen mit Filter nach Stream, Art und Tag;
+  Videos lassen sich im Browser abspielen und herunterladen. H.265-Videos spielen nicht alle
+  Browser ab – dann herunterladen (z. B. VLC).
+
+## Speicherort für Bilder und Videos
+
+**Einstellungen → Speicherort für Bilder und Videos:**
+
+| Speicherort | Hinweise |
+|---|---|
+| Datenordner | Standard, `/opt/Sentinel-MK1/data` auf dem Jetson |
+| USB-Festplatte / USB-Stick | Laufwerk auswählen (wird automatisch gefunden); Sentinel bindet es selbst ein, auch nach Neustart. ext4, exFAT, NTFS, FAT32 |
+| Netzwerkspeicher | **SMB** (Windows-Freigabe, Synology, QNAP, Fritzbox) oder **NFS**; Server, Freigabe, Benutzer, Passwort. SMB-Version wird automatisch ermittelt |
+| Eigener Ordner | ein bereits eingebundener Pfad |
+
+- **Testen** prüft Einbinden und Schreibrecht und zeigt den freien Platz.
+- Mit *vorhandene Bilder und Videos dorthin verschieben* zieht Sentinel den Bestand im Hintergrund um.
+  Ohne Haken bleiben ältere Bilder am alten Ort und sind trotzdem sichtbar.
+- Ist das Ziel nicht erreichbar (NAS aus, Festplatte abgezogen), speichert Sentinel vorübergehend
+  im Datenordner und versucht es alle 2 Minuten erneut – es geht nichts verloren.
+- Datenbank, Modelle und Gelerntes bleiben immer im Datenordner.
+- Fritzbox: Server `fritz.box`, Freigabe = Name des USB-Speichers an der Fritzbox, Benutzer mit
+  NAS-Berechtigung; bei älteren Modellen SMB-Version 1.0 wählen.
+
 ## Kamera wird nicht angezeigt
 
 Unter **Einstellungen → Streams** hat jeder Stream den Knopf **Testen**. Der Jetson prüft dann
@@ -265,6 +315,8 @@ Autos lassen sich dadurch nicht sicher auseinanderhalten; Kennzeichenerkennung g
 |---|---|
 | `sentinel/alarm` | `{"alarm": "...", "object": "Max", "object_id": 7, "cls": "person", "count": 3, "streams": ["Einfahrt","Hof"], "text": "...", "time": "2026-11-13 17:20:00"}` |
 | `sentinel/detection` | jede Sichtung (optional, Einstellungen → MQTT) |
+| `sentinel/motion` | Bewegung erkannt: `{"event": 12, "stream": "s1", "stream_name": "Einfahrt", "area": 2.4, "ts": …}` |
+| `sentinel/clip` | Video fertig: `{"event": 12, "clip": "/clips/2026-11-15/084602_s1.mp4", "duration": 12.7}` |
 | `sentinel/test` | Testnachricht |
 
 Präfix `sentinel` ist änderbar.
@@ -285,6 +337,8 @@ sentinel/
   onnxlite.py          CPU-Rückfall: KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
   streams.py           Empfang per GStreamer mit Hardware-Dekoder (NVDEC), Rückfall ffmpeg
   streamtest.py        Stream-Test: Netzwerk, RTSP-Antworten, Empfang über TCP und UDP
+  recorder.py          Videoschnipsel (ffmpeg, Kopieren bzw. H.264)
+  storage.py           Speicherort: Datenordner, USB-Festplatte, Netzwerkspeicher (SMB/NFS)
   store.py             SQLite-Datenbank
   web.py               Webserver + JSON-API
   updater.py           Updates aus dem GitHub-Repo (Sicherung, Installation, Neustart)
