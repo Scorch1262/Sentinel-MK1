@@ -1,5 +1,17 @@
 # Änderungen
 
+## 2.6.0
+- Freier Speicher aller verfügbaren Speicherorte als Balken (Datenordner, gewählter Speicherort,
+  eingebundene USB-/SATA-Laufwerke, Netzwerkspeicher), jede Sekunde gemessen; gleiche
+  Dateisysteme werden zusammengefasst
+- MQTT: eigene Topics je Stream unter `<präfix>/stream/<Name>/…` – erreichbar, status, bewegung,
+  bewegung_flaeche, letzte_bewegung, aufnahme, aufnahme_modus, vorlauf_puffer, analyse, personen,
+  objekte, bilder_s, fehler, json (retained, bei Änderung, alle 60 s komplett)
+- MQTT: Füllstand je Speicherort unter `<präfix>/speicher/<Ort>/…` jede Sekunde (einstellbar)
+- Weggefallene Streams/Speicherorte werden beim Broker gelöscht; bei Verbindungsproblemen
+  15 s Pause statt Dauerversuchen
+- Einstellungen → MQTT: Stream-Zustand und Speicherfüllstand einzeln abschaltbar
+
 ## 2.5.0
 - Videoschnipsel mit einstellbarem Vorlauf (0–60 s, Standard 5 s): Ringpuffer je Stream im
   Arbeitsspeicher (ffmpeg-Segmente ohne Umrechnen), bei Ereignis werden die Stücke ab „Ereignis

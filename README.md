@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.5.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.6.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -23,7 +23,9 @@ auftaucht.
   einstellbar, auf Wunsch verlängert, solange sich etwas bewegt (mit Höchstlänge). Ansehen und
   herunterladen im Tab **Ereignisse** (siehe *Bewegung und Videoaufnahmen*).
 - **Speicherort wählbar:** Bilder und Videos im Datenordner, auf einer **USB-Festplatte** oder auf
-  einem **Netzwerkspeicher** (SMB/NFS – NAS, Windows-Freigabe, Fritzbox).
+  einem **Netzwerkspeicher** (SMB/NFS – NAS, Windows-Freigabe, Fritzbox); freier Platz aller
+  Speicherorte als Balken, wahlweise Loop-Betrieb.
+- **MQTT je Stream** (Bewegung, Aufnahme, erreichbar, Personen …) und **Speicherfüllstand** jede Sekunde.
 - **Automatische Erkennung** (80 Arten, NanoDet-Plus) mit Rahmenfarben je Gruppe:
 
   | Gruppe | Farbe | Arten |
@@ -330,6 +332,45 @@ Autos lassen sich dadurch nicht sicher auseinanderhalten; Kennzeichenerkennung g
 | `sentinel/test` | Testnachricht |
 
 Präfix `sentinel` ist änderbar.
+
+### Zustand je Stream
+
+Jeder Stream hat unter seinem Namen eigene Topics (Leerzeichen und `/ + #` werden zu `_`, z. B.
+„Garten Süd“ → `Garten_Süd`). Gesendet wird bei jeder Änderung (geprüft jede Sekunde) und alle
+60 s komplett, jeweils *retained* – ein neu verbundener Client sieht sofort den aktuellen Stand.
+
+| Topic `sentinel/stream/<Name>/…` | Wert |
+|---|---|
+| `erreichbar` | `1` = Kamera liefert Bilder, `0` = nicht erreichbar |
+| `status` | `live`, `verbinde`, `getrennt`, `pausiert`, `deaktiviert` |
+| `bewegung` | `1` = gerade Bewegung über der Schwelle, sonst `0` |
+| `bewegung_flaeche` | bewegte Bildfläche in % |
+| `letzte_bewegung` | Zeitpunkt der letzten Bewegung (ISO) |
+| `aufnahme` | `1` = Video wird gerade aufgenommen |
+| `aufnahme_modus` | `aus`, `bewegung`, `objekte` |
+| `vorlauf_puffer` | `1` = Vorlauf-Puffer läuft |
+| `analyse` | `objekte`, `bewegung`, `aus` |
+| `personen` / `objekte` | gerade sichtbare Personen / Objekte insgesamt |
+| `bilder_s` | empfangene Bilder je Sekunde |
+| `fehler` | letzte Fehlermeldung, wenn nicht erreichbar |
+| `name` | Anzeigename |
+| `json` | alles zusammen als JSON |
+
+### Füllstand der Speicherorte
+
+Jede Sekunde (einstellbar) für jeden verfügbaren Speicherort – Datenordner, gewählter Speicherort,
+eingebundene USB-/SATA-Laufwerke, Netzwerkspeicher:
+
+| Topic `sentinel/speicher/<Ort>/…` | Wert |
+|---|---|
+| `frei_gb`, `belegt_gb`, `gesamt_gb` | Größen in GB |
+| `belegt_prozent`, `frei_prozent` | Füllstand in % |
+| `erreichbar` | `1`/`0` |
+| `aktiv` | `1` = hier werden Bilder und Videos gespeichert |
+| `name`, `pfad`, `json` | Anzeigename, Pfad, alles als JSON |
+
+Fällt ein Stream oder Speicherort weg, löscht Sentinel seine gespeicherten Werte beim Broker.
+Beides lässt sich unter Einstellungen → MQTT abschalten.
 
 ## Dateien
 

@@ -16,8 +16,8 @@ from .models import DETECTORS, ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
 from .recorder import Recorder
-from .storage import MediaStore
-from .streams import StreamWorker, decoder_info, find_ffmpeg
+from .storage import MediaStore, SpaceMonitor, topic_name
+from .streams import StreamWorker, decoder_info, find_ffmpeg, mask_url
 
 
 def iou(a, b):
@@ -211,6 +211,10 @@ class Engine:
             os.makedirs(d, exist_ok=True)
         self.logbuf = collections.deque(maxlen=300)
         self.media = MediaStore(config, self.data_dir, self.log)
+        self.space = SpaceMonitor(self.media, self.log)
+        self.mq_sent = {}           # Topic -> zuletzt gesendeter Wert (Stream-Status)
+        self.mq_full = 0.0
+        self.last_motion_ts = {}
         self.recorder = Recorder(self.log, self.data_dir)
         self.mot = {}               # stream_id -> Zustand der Bewegungserkennung
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
@@ -283,6 +287,7 @@ class Engine:
             self.models.ensure(on_done=self.load_models)
         threading.Thread(target=self._detect_loop, daemon=True).start()
         threading.Thread(target=self._housekeeping, daemon=True).start()
+        threading.Thread(target=self._status_loop, daemon=True).start()
 
     def detector_choice(self):
         """Gewaehltes Erkennungsmodell; 'auto' = YOLOX-S auf der GPU, ohne GPU YOLOX-Tiny."""
@@ -1193,6 +1198,123 @@ class Engine:
                     self.log("Loop: %d älteste Bilder/Videos überschrieben (Reserve %.1f GB)"
                              % (removed, reserve / 1073741824.0))
             return removed
+
+    # ------------------------------------------------------------------
+    # Status je Stream und Speicherfuellstand (UI + MQTT)
+    # ------------------------------------------------------------------
+    def stream_states(self):
+        """Aktueller Zustand jedes konfigurierten Streams (fuer MQTT-Subtopics)."""
+        now = time.time()
+        out = []
+        for sc in self.cfg.get("streams"):
+            sid = sc["id"]
+            w = self.workers.get(sid)
+            mode = stream_mode(sc) if sc.get("enabled", True) else "aus"
+            online = bool(w and w.status == "live" and w.last_ts and now - w.last_ts < 10)
+            m = self.motion.get(sid)
+            lp = self.last_proc.get(sid)
+            area = None
+            if m is not None and lp and now - lp[1] < 5 and online and mode in ("objects", "motion"):
+                area = round(float(m.mean()) * 100.0, 1)
+            moving = area is not None and area >= float(sc.get("motion_pct", 0.5) or 0.5)
+            if moving:
+                self.last_motion_ts[sid] = now
+            tr = [t for t in self.tracks.get(sid, []) if t.confirmed and not t.rejected and now - t.last_ts < 2.5]
+            ring = self.recorder.ring_info(sid)
+            lm = self.last_motion_ts.get(sid)
+            out.append(dict(
+                id=sid, name=sc.get("name", sid), key=topic_name(sc.get("name", sid)),
+                erreichbar=1 if online else 0,
+                status=(w.status if w else ("deaktiviert" if not sc.get("enabled", True) else "pausiert")),
+                bilder_s=round(w.fps, 1) if w and online else 0,
+                analyse={"objects": "objekte", "motion": "bewegung", "off": "aus"}.get(mode, mode),
+                bewegung=1 if moving else 0,
+                bewegung_flaeche=area if area is not None else 0,
+                aufnahme=1 if self.recorder.busy(sid) else 0,
+                aufnahme_modus={"off": "aus", "motion": "bewegung", "objects": "objekte"}.get(sc.get("record") or "off"),
+                vorlauf_puffer=(1 if ring and ring.get("ok") else 0) if ring is not None else 0,
+                personen=sum(1 for t in tr if t.cls == "person"),
+                objekte=len(tr),
+                letzte_bewegung=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(lm)) if lm else "",
+                fehler=mask_url((w.error if w and not online else "") or "")))
+        return out
+
+    def _status_loop(self):
+        last_space = 0.0
+        backoff = 0.0
+        while not self.stop_ev.wait(1.0):
+            try:
+                m = self.cfg.get("mqtt")
+                if not m.get("enabled") or time.time() < backoff:
+                    if not m.get("enabled"):
+                        self.mq_sent = {}
+                    continue
+                fail = []
+
+                def pub(topic, val):
+                    if fail:
+                        return False
+                    if self.mqtt.publish(m, topic, val, retain=True):
+                        return True
+                    fail.append(topic)
+                    return False
+                pre = (m.get("prefix") or "sentinel").strip("/")
+                now = time.time()
+                full = now - self.mq_full > 60          # alle 60 s alles erneut senden
+                if m.get("publish_streams", True):
+                    states = self.stream_states()
+                    self._mq_forget(pub, pre, "stream", set(x["key"] for x in states),
+                                    [k for k in states[0] if k not in ("id", "key")] if states else [])
+                    for st in states:
+                        base = "%s/stream/%s" % (pre, st["key"])
+                        vals = {k: v for k, v in st.items() if k not in ("id", "key")}
+                        changed = False
+                        for k, v in vals.items():
+                            topic = base + "/" + k
+                            sv = str(v)
+                            if full or self.mq_sent.get(topic) != sv:
+                                if pub(topic, sv):
+                                    self.mq_sent[topic] = sv
+                                    changed = True
+                        if changed:
+                            pub(base + "/json", json.dumps(vals, ensure_ascii=False))
+                if m.get("publish_storage", True) and now - last_space >= float(m.get("storage_interval_s", 1) or 1) - 0.05:
+                    last_space = now
+                    locs, _ = self.space.get()
+                    self._mq_forget(pub, pre, "speicher", set(x["key"] for x in locs),
+                                    ["name", "erreichbar", "aktiv", "frei_gb", "belegt_gb", "gesamt_gb",
+                                     "belegt_prozent", "frei_prozent", "pfad"])
+                    for l in locs:
+                        base = "%s/speicher/%s" % (pre, l["key"])
+                        gb = lambda v: round(v / 1073741824.0, 2) if v is not None else ""
+                        vals = dict(name=l["name"], erreichbar=1 if l["reachable"] else 0, aktiv=1 if l["active"] else 0,
+                                    frei_gb=gb(l["free"]), belegt_gb=gb(l["used"]), gesamt_gb=gb(l["total"]),
+                                    belegt_prozent=l["pct"] if l["pct"] is not None else "",
+                                    frei_prozent=round(100 - l["pct"], 1) if l["pct"] is not None else "",
+                                    pfad=l["path"])
+                        for k, v in vals.items():
+                            pub(base + "/" + k, str(v))
+                        pub(base + "/json", json.dumps(vals, ensure_ascii=False))
+                if fail:
+                    self.mq_sent = {}               # nach Wiederverbindung alles neu senden
+                    backoff = time.time() + 15
+                elif full:
+                    self.mq_full = now
+            except Exception as e:
+                if time.time() - getattr(self, "_mq_err", 0) > 300:
+                    self._mq_err = time.time()
+                    self.log("MQTT-Status: %s" % e)
+
+    def _mq_forget(self, pub, pre, kind, keys, fields):
+        """Weggefallene Streams/Speicherorte: gespeicherte (retained) Werte beim Broker loeschen."""
+        known = self.__dict__.setdefault("mq_known", {}).setdefault(kind, set())
+        for k in known - keys:
+            for f in list(fields) + ["json"]:
+                pub("%s/%s/%s/%s" % (pre, kind, k, f), "")     # leere retained-Nachricht = loeschen
+            for t in [t for t in self.mq_sent if t.startswith("%s/%s/%s/" % (pre, kind, k))]:
+                self.mq_sent.pop(t, None)
+        known.clear()
+        known.update(keys)
 
     def _recording_done(self, eid, rel, dur, size):
         self.store.x("UPDATE events SET rec=0, clip=?, clip_dur=?, clip_size=? WHERE id=?",

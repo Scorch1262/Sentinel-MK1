@@ -92,6 +92,9 @@ class Api:
             return [event_json(r) for r in e.events(q)]
         if path == "/api/storage":
             return e.media.info()
+        if path == "/api/storage/locations":
+            locs, ts = e.space.get()
+            return dict(ts=ts, locations=locs, sentinel_root=e.media.root)
         if path == "/api/storage/disks":
             from .storage import list_disks
             return list_disks()

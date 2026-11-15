@@ -49,7 +49,11 @@ DEFAULTS = {
                 # Loop: Speicher bis auf die Reserve fuellen, dann aelteste Bilder/Videos ueberschreiben
                 "loop": False, "loop_reserve_gb": 2, "loop_reserve_pct": 5},
     "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "user": "", "password": "",
-             "prefix": "sentinel", "publish_detections": False},
+             "prefix": "sentinel", "publish_detections": False,
+             # Zustand je Stream: <praefix>/stream/<Name>/<wert> (bei Aenderung, alle 60 s komplett)
+             "publish_streams": True,
+             # Fuellstand der Speicherorte: <praefix>/speicher/<Name>/<wert> (jede Sekunde)
+             "publish_storage": True, "storage_interval_s": 1},
     "ui": {"sound": True, "repeat_list_min": 2, "live_mode": "live"},
     "update": {"repo": "Scorch1262/Sentinel-MK1", "branch": "main", "auto_check": True},
     # Luefter (nur Jetson): auto = Sentinel-Kurve, kernel = Jetson-Standard, fixed = fest, max = voll

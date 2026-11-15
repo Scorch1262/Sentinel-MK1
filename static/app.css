@@ -294,3 +294,17 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .badge.warn{color:var(--danger);border-color:currentColor}
 .stream-ed .rec-row{padding-top:2px}
 .rec-chip{color:#fff;background:var(--danger);border-color:var(--danger)}
+
+/* v2.6.0 Speicherbalken */
+.space-bars{display:grid;gap:10px;margin:2px 0 14px}
+.sbar{display:grid;gap:5px;min-width:0}
+.sbar-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0}
+.sbar-head b{font-weight:600;overflow-wrap:anywhere}
+.sbar-head .grow{flex:1 1 auto}
+.sbar-track{position:relative;height:16px;border-radius:8px;background:var(--bg);border:1px solid var(--border);overflow:hidden}
+.sbar-fill{position:absolute;inset:0 auto 0 0;background:var(--accent-2);transition:width .6s}
+.sbar.warn .sbar-fill{background:var(--accent)}
+.sbar.crit .sbar-fill{background:var(--danger)}
+.sbar.off .sbar-track{opacity:.4}
+.sbar.active .sbar-track{border-color:var(--accent-2)}
+.sbar-pct{position:absolute;right:8px;top:0;line-height:14px;font-size:11px;color:var(--text);text-shadow:0 0 3px #000}

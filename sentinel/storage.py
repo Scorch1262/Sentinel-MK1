@@ -366,6 +366,111 @@ class MediaStore(object):
         return total
 
 
+def topic_name(name):
+    """Name fuer ein MQTT-Topic: / + # und Leerzeichen ersetzen"""
+    out = "".join("_" if c in "/+#" or c.isspace() else c for c in (name or "").strip())
+    return out.strip("_") or "unbenannt"
+
+
+class SpaceMonitor(object):
+    """Fuellstand aller verfuegbaren Speicherorte, jede Sekunde im Hintergrund gemessen.
+
+    Orte: Datenordner, aktiver Speicherort, eingebundene externe Laufwerke (USB/SATA/NVMe),
+    eingebundener Netzwerkspeicher. Gleiche Dateisysteme werden zusammengefasst."""
+
+    def __init__(self, media, log, interval=1.0):
+        self.media = media
+        self.log = log
+        self.interval = interval
+        self.data = []
+        self.ts = 0.0
+        self._disks = ([], 0.0)
+        self.lock = threading.Lock()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _candidates(self):
+        m = self.media
+        t = m._target()
+        typ = t.get("type", "local")
+        out = [dict(name="Datenordner", kind="data", path=m.local_root)]
+        if typ != "local":
+            nm = {"disk": "USB-Festplatte", "nas": "Netzwerkspeicher", "path": "Eigener Ordner"}.get(typ, typ)
+            if typ == "disk":
+                for d in self._disk_list():
+                    if d["uuid"] == t.get("uuid") and d["label"]:
+                        nm = d["label"]
+            elif typ == "nas":
+                nm = "NAS %s" % (t.get("share") or "").strip("/").split("/")[-1] if t.get("share") else nm
+            elif typ == "path":
+                nm = os.path.basename((t.get("path") or "").rstrip("/")) or nm
+            path = m.root if m.state == "ok" else {"disk": DISK_MNT, "nas": NAS_MNT}.get(typ, t.get("path") or "")
+            out.append(dict(name=nm, kind=typ, path=path, target=True))
+        for d in self._disk_list():
+            if d["mount"]:
+                out.append(dict(name=d["label"] or d["model"] or os.path.basename(d["dev"]), kind="usb" if d["tran"] == "usb" else "disk",
+                                path=d["mount"]))
+        if mounted_at(NAS_MNT) and typ != "nas":
+            out.append(dict(name="Netzwerkspeicher", kind="nas", path=NAS_MNT))
+        return out
+
+    def _disk_list(self):
+        lst, ts = self._disks
+        if time.time() - ts > 30:
+            try:
+                lst = list_disks()
+            except Exception:
+                lst = []
+            self._disks = (lst, time.time())
+        return lst
+
+    def sample(self):
+        res, seen = [], {}
+        active_root = self.media.root
+        for c in self._candidates():
+            p = c["path"]
+            item = dict(name=c["name"], key=topic_name(c["name"]), kind=c["kind"], path=p,
+                        active=False, reachable=False, total=None, free=None, used=None, pct=None)
+            try:
+                st = os.statvfs(p)
+                dev = os.stat(p).st_dev
+                total = st.f_blocks * st.f_frsize
+                free = st.f_bavail * st.f_frsize
+                used = total - st.f_bfree * st.f_frsize
+                item.update(reachable=total > 0, total=total, free=free, used=used,
+                            pct=round(100.0 * used / max(1, used + free), 1) if total else None)
+            except OSError:
+                dev = None
+            if c.get("target") and self.media.state == "ok":
+                item["active"] = True
+            if c["kind"] == "data" and active_root == self.media.local_root:
+                item["active"] = True
+            if dev is not None and dev in seen:
+                prev = seen[dev]                      # dasselbe Dateisystem: zusammenfassen
+                if item["active"]:
+                    prev["active"] = True
+                prev["name"] += " · " + item["name"]       # Topic-Name (key) bleibt der erste
+                continue
+            if dev is not None:
+                seen[dev] = item
+            res.append(item)
+        return res
+
+    def _loop(self):
+        while True:
+            t0 = time.time()
+            try:
+                d = self.sample()
+                with self.lock:
+                    self.data, self.ts = d, time.time()
+            except Exception as e:
+                self.log("Speichermessung: %s" % e)
+            time.sleep(max(0.2, self.interval - (time.time() - t0)))
+
+    def get(self):
+        with self.lock:
+            return [dict(x) for x in self.data], self.ts
+
+
 def _fmt(n):
     if n is None:
         return "?"

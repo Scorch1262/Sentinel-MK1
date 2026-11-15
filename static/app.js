@@ -1031,17 +1031,23 @@ async function loadSettings() {
   const me = el('input', {type: 'checkbox', checked: M.enabled}), mhst = el('input', {type: 'text', value: M.host}), mp = numIn(M.port, {min: 1, max: 65535});
   const mu = el('input', {type: 'text', value: M.user, autocomplete: 'off'}), mpw = el('input', {type: 'password', value: M.password, autocomplete: 'new-password'});
   const mpre = el('input', {type: 'text', value: M.prefix}), mdet = el('input', {type: 'checkbox', checked: M.publish_detections});
+  const mst = el('input', {type: 'checkbox', checked: M.publish_streams !== false}), msp = el('input', {type: 'checkbox', checked: M.publish_storage !== false});
+  const msi = numIn(M.storage_interval_s || 1, {min: 1, max: 3600, step: 1});
   box.append(el('div', {class: 'panel'}, el('h3', null, 'MQTT'),
     el('div', {class: 'form'},
-      el('label', null, 'MQTT'), el('label', {class: 'chk'}, me, 'Alarme an MQTT-Broker senden'),
+      el('label', null, 'MQTT'), el('label', {class: 'chk'}, me, 'an MQTT-Broker senden (Alarme, Stream-Zustand, Speicher)'),
       el('label', null, 'Broker'), el('div', {class: 'row'}, mhst, mp),
       el('div', {class: 'hint'}, 'Läuft Mosquitto auf dem Jetson selbst: 127.0.0.1 : 1883'),
       el('label', null, 'Benutzer'), mu, el('label', null, 'Passwort'), mpw,
       el('label', null, 'Topic-Präfix'), mpre, el('div', {class: 'hint'}, 'Alarme: <präfix>/alarm · Erkennungen: <präfix>/detection'),
-      el('label', null, 'Erkennungen'), el('label', {class: 'chk'}, mdet, 'jede Sichtung ebenfalls senden')),
+      el('label', null, 'Erkennungen'), el('label', {class: 'chk'}, mdet, 'jede Sichtung ebenfalls senden'),
+      el('label', null, 'Stream-Zustand'), el('label', {class: 'chk'}, mst, 'je Stream eigene Topics (Bewegung, Aufnahme, erreichbar …)'),
+      el('div', {class: 'hint mono'}, '<präfix>/stream/<Name>/erreichbar · bewegung · aufnahme · personen · … · json'),
+      el('label', null, 'Speicherfüllstand'), el('div', {class: 'row'}, el('label', {class: 'chk'}, msp, 'senden alle'), msi, el('span', {class: 'muted'}, 's')),
+      el('div', {class: 'hint mono'}, '<präfix>/speicher/<Ort>/frei_gb · belegt_prozent · … · json')),
     el('div', {class: 'actions'},
       el('button', {class: 'btn', onclick: () => saveSection('mqtt', {enabled: me.checked, host: mhst.value, port: +mp.value, user: mu.value, password: mpw.value,
-        prefix: mpre.value, publish_detections: mdet.checked})}, 'Speichern'),
+        prefix: mpre.value, publish_detections: mdet.checked, publish_streams: mst.checked, publish_storage: msp.checked, storage_interval_s: +msi.value})}, 'Speichern'),
       el('button', {class: 'btn btn-ghost', onclick: async () => { const r = await api('/api/mqtt/test', {body: {}}); toast(r.ok ? 'Testnachricht gesendet' : 'Fehler: ' + r.error); }}, 'Test senden'))));
   /* Speicher + Oberflaeche */
   const T = C.storage, U = C.ui;
@@ -1183,6 +1189,7 @@ function storagePanel(st) {
   };
   show(); refresh(); if (t.type === 'disk') scan();
   return el('div', {class: 'panel'}, el('h3', null, 'Speicherort für Bilder und Videos'),
+    el('div', {class: 'space-bars', id: 'spaceBars'}, el('div', {class: 'muted small'}, 'Speicherplatz wird gemessen …')),
     el('div', {class: 'form', style: {marginBottom: '10px'}}, el('label', null, 'Aktuell'), info), form, out,
     el('div', {class: 'actions'},
       el('button', {class: 'btn btn-ghost', onclick: async e => {
@@ -1396,8 +1403,28 @@ function renderUpdate() {
   const b = $('#updGo'); b.disabled = !!u.busy; b.textContent = u.busy ? 'Update läuft …' : u.available ? 'Update auf v' + u.remote + ' installieren' : 'Neu installieren';
   b.className = u.available ? 'btn' : 'btn btn-ghost';
 }
+async function renderSpaceBars() {
+  const box = $('#spaceBars'); if (!box) return;
+  let r; try { r = await api('/api/storage/locations'); } catch (e) { return; }
+  box.innerHTML = '';
+  if (!r.locations.length) { box.append(el('div', {class: 'muted small'}, 'Keine Speicherorte gefunden')); return; }
+  const kindName = {data: 'intern', disk: 'Festplatte', usb: 'USB', nas: 'Netzwerk', path: 'Ordner'};
+  r.locations.forEach(l => {
+    const pct = l.pct != null ? l.pct : 0;
+    const cls = !l.reachable ? 'off' : pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : 'ok';
+    box.append(el('div', {class: 'sbar ' + cls + (l.active ? ' active' : ''), title: l.path},
+      el('div', {class: 'sbar-head'},
+        el('b', null, l.name), el('span', {class: 'muted small'}, kindName[l.kind] || l.kind),
+        l.active ? el('span', {class: 'badge ok'}, 'Bilder & Videos') : null,
+        el('span', {class: 'grow'}),
+        el('span', {class: 'mono small'}, l.reachable ? fmtBytes(l.free) + ' frei von ' + fmtBytes(l.total) : 'nicht erreichbar')),
+      el('div', {class: 'sbar-track'}, el('div', {class: 'sbar-fill', style: {width: Math.min(100, pct) + '%'}}),
+        el('span', {class: 'sbar-pct mono'}, l.reachable ? pct.toFixed(1) + ' % belegt' : ''))));
+  });
+}
 async function updateSettingsStatus() {
   renderUpdate();
+  renderSpaceBars();
   const fs = $('#filterStats'), st0 = S.state;
   if (fs && st0 && st0.filter_stats) fs.textContent = 'seit Start: ' + st0.filter_stats.rejected_verify + '× Zweitprüfung, ' +
     st0.filter_stats.rejected_shape + '× Form, ' + (st0.filter_stats.rejected_static || 0) + '× ohne Bewegung, ' + st0.filter_stats.rejected_fp + '× gelernte Fehlerkennung';
