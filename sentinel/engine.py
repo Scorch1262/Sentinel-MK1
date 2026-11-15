@@ -3,6 +3,7 @@ import collections
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -1895,6 +1896,28 @@ class Engine:
                     error=self.engine_error, load=load, unack=unack, alarm_seq=self.alarm_seq,
                     uptime=int(time.time() - self.started), time=time.time(),
                     time_text=time.strftime("%d.%m.%Y %H:%M:%S"))
+
+    def power(self, action):
+        """Geraet herunterfahren bzw. neu starten - vorher Aufnahmen sauber abschliessen."""
+        time.sleep(1.0)                       # Antwort an den Browser zuerst rausgeben
+        try:
+            self.recorder.stop_all()
+        except Exception:
+            pass
+        try:
+            self.store.x("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        subprocess.call(["sync"])
+        cmds = ([["systemctl", "poweroff"], ["shutdown", "-h", "now"], ["poweroff"]] if action == "shutdown"
+                else [["systemctl", "reboot"], ["shutdown", "-r", "now"], ["reboot"]])
+        for c in cmds:
+            try:
+                if subprocess.call(c) == 0:
+                    return
+            except OSError:
+                continue
+        self.log("%s nicht möglich (fehlende Rechte?)" % ("Herunterfahren" if action == "shutdown" else "Neustart"))
 
     def shutdown(self):
         self.stop_ev.set()

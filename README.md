@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.6.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.7.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -61,6 +61,8 @@ auftaucht.
 - Live-Ansicht: flüssiges Live-Bild oder exakt das analysierte Bild, Vollbild per Doppelklick,
   Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
 - **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit).
+- **Gerät herunterfahren / neu starten** per Knopf unter Einstellungen → System (laufende
+  Aufnahmen werden vorher abgeschlossen).
 - **Speicherverwaltung:** Bilder und Videos nach x Tagen bzw. ab x MB automatisch löschen – gelernte
   Personen/Objekte bleiben erhalten.
 - Alle Einstellungen in `config.json` (gut lesbar), Daten in `data/` – beides bleibt bei Updates erhalten.
@@ -259,6 +261,19 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
 | Eigener Ordner | ein bereits eingebundener Pfad |
 
 - **Testen** prüft Einbinden und Schreibrecht und zeigt den freien Platz.
+- **Nach dem Einschalten** bindet Sentinel das Laufwerk selbst ein. USB-Festplatten melden sich oft
+  erst nach dem Start – Sentinel versucht es deshalb in den ersten 15 Minuten alle 10 s, danach
+  jede Minute. Wurde der Strom ohne Herunterfahren getrennt, wird das Dateisystem automatisch
+  geprüft/repariert. Bis dahin landen neue Bilder im Datenordner und werden danach automatisch
+  auf das Laufwerk verschoben.
+- Ist das Laufwerk nicht eingebunden, wird **nie** in den leeren Einhängepunkt (also auf die
+  SD-Karte/eMMC) geschrieben – der Einhängepunkt ist schreibgeschützt.
+- **Umzug** mit Ladebalken: Dateien, Datenmenge, Geschwindigkeit und Restzeit; abbrechbar.
+  „Ältere Dateien hierher holen“ holt Bilder/Videos aus früheren Speicherorten.
+- **Laufwerk formatieren …** richtet eine USB-Festplatte/-Stick neu ein: eine Partition,
+  **ext4** (empfohlen, übersteht Stromausfälle am besten) oder exFAT (auch am PC lesbar), danach
+  auf Wunsch direkt als Speicherort. Systemspeicher und anderweitig eingebundene Laufwerke werden
+  nicht angeboten; Bestätigung durch Eintippen von FORMATIEREN.
 - Mit *vorhandene Bilder und Videos dorthin verschieben* zieht Sentinel den Bestand im Hintergrund um.
   Ohne Haken bleiben ältere Bilder am alten Ort und sind trotzdem sichtbar.
 - Ist das Ziel nicht erreichbar (NAS aus, Festplatte abgezogen), speichert Sentinel vorübergehend

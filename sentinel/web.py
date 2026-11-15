@@ -95,6 +95,12 @@ class Api:
         if path == "/api/storage/locations":
             locs, ts = e.space.get()
             return dict(ts=ts, locations=locs, sentinel_root=e.media.root)
+        if path == "/api/storage/devices":
+            from .storage import list_block_devices
+            return list_block_devices()
+        if path == "/api/storage/pending":
+            n, b = e.media.pending_elsewhere()
+            return dict(files=n, bytes=b)
         if path == "/api/storage/disks":
             from .storage import list_disks
             return list_disks()
@@ -275,6 +281,16 @@ class Api:
                     tg["password"] = (e.cfg.get("storage").get("target") or {}).get("password", "")
                 if tg.get("type") not in ("local", "path", "disk", "nas"):
                     raise ValueError("Speicherart unbekannt")
+                if tg.get("type") == "path" and (tg.get("path") or "").startswith("/"):
+                    # Laufwerk hinter dem Ordner merken -> nach dem Einschalten selbst einbinden
+                    from .storage import mount_point_of, mounted_at, blkid
+                    mp = mount_point_of(tg["path"]) if os.path.exists(tg["path"]) else "/"
+                    tg.pop("uuid", None)
+                    tg.pop("mount", None)
+                    if mp != "/":
+                        dev = mounted_at(mp) or ""
+                        if dev.startswith("/dev/"):
+                            tg.update(mount=mp, uuid=blkid(dev, "UUID"), fstype=blkid(dev, "TYPE"))
             if sec == "server":
                 p = int(vals.get("port", 8096))
                 if not 1 <= p <= 65535:
@@ -282,17 +298,20 @@ class Api:
                 vals = dict(port=p)
             old = e.cfg.get("detection")
             old_root = e.media.root
+            if sec == "storage" and isinstance(vals.get("target"), dict):
+                e.cfg.update("storage", dict(target=None))     # Ziel komplett ersetzen, nicht mischen
             e.cfg.update(sec, vals)
             if sec == "storage" and "target" in vals:
                 ok, msg = e.media.apply()
-                e.media.unmount_unused()
                 if ok and old_root != e.media.root:
                     olds = list(e.cfg.get("storage").get("old_roots") or [])
-                    if body.get("migrate"):
-                        e.media.migrate_from(old_root)
                     if old_root not in olds and old_root != e.media.local_root:
                         olds.append(old_root)             # alte Bilder bleiben dort lesbar
                         e.cfg.update("storage", dict(old_roots=olds[-5:]))
+                    if body.get("migrate"):
+                        # erst umziehen, danach das alte Laufwerk loesen
+                        e.media.migrate_from(old_root, done=e.media.unmount_unused)
+                # ohne Umzug bleibt ein altes Laufwerk eingebunden, damit seine Bilder sichtbar bleiben
                 return dict(ok=ok, msg=msg, storage=e.media.info())
             if sec == "detection":
                 new = e.cfg.get("detection")
@@ -407,6 +426,27 @@ class Api:
             return dict(ok=True, deleted=n)
         if path == "/api/storage/test":
             return e.media.test(body.get("target") or {})
+        if path == "/api/storage/migrate":
+            others = [r for r in e.media.roots()[1:]]
+            if not e.media.migrate_from(others):
+                return dict(ok=False, msg="Nichts zu verschieben oder Umzug läuft bereits")
+            return dict(ok=True)
+        if path == "/api/storage/migrate/cancel":
+            e.media.cancel_migration()
+            return dict(ok=True)
+        if path == "/api/storage/format":
+            if body.get("confirm") != "FORMATIEREN":
+                raise ValueError("Bestätigung fehlt")
+            st = e.media.format_disk(body.get("dev") or "", body.get("fs") or "ext4",
+                                     use_after=bool(body.get("use", True)))
+            return dict(ok=True, formatting=st)
+        if path == "/api/system/power":
+            act = body.get("action")
+            if act not in ("shutdown", "reboot"):
+                raise ValueError("unbekannte Aktion")
+            e.log("%s über die Weboberfläche ausgelöst" % ("Herunterfahren" if act == "shutdown" else "Neustart des Geräts"))
+            threading.Thread(target=e.power, args=(act,), daemon=True).start()
+            return dict(ok=True)
         m = re.match(r"^/api/detection/(\d+)/false$", path)
         if m:
             did = int(m.group(1))

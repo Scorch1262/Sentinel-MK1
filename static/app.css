@@ -308,3 +308,25 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .sbar.off .sbar-track{opacity:.4}
 .sbar.active .sbar-track{border-color:var(--accent-2)}
 .sbar-pct{position:absolute;right:8px;top:0;line-height:14px;font-size:11px;color:var(--text);text-shadow:0 0 3px #000}
+
+/* v2.7.0 Fortschritt, Formatieren, Gerät */
+.jobs{display:grid;gap:10px;margin:0 0 12px}
+.job{border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:grid;gap:6px;background:var(--bg);min-width:0}
+.job.done{border-color:var(--accent-2)}
+.job.warn{border-color:var(--danger)}
+.job-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.job-head .grow,.actions .grow{flex:1 1 auto}
+.prog{position:relative;height:18px;border-radius:9px;background:var(--panel);border:1px solid var(--border);overflow:hidden}
+.prog-fill{position:absolute;inset:0 auto 0 0;background:var(--accent);transition:width .8s}
+.prog-fill.indet{width:35%!important;animation:indet 1.4s infinite ease-in-out}
+@keyframes indet{0%{left:-35%}100%{left:100%}}
+.prog-txt{position:absolute;right:8px;top:0;line-height:16px;font-size:11px;text-shadow:0 0 3px #000}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.warn-box{border:1px solid var(--danger);color:var(--danger);border-radius:8px;padding:10px 12px;background:rgba(255,80,80,.07)}
+.fmt-list{display:grid;gap:8px;margin-bottom:12px}
+.fmt-dev{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;min-width:0}
+.fmt-dev:hover{border-color:var(--accent)}
+.fmt-dev > div{min-width:0;overflow-wrap:anywhere}
+.fmt-dev input{margin-top:3px}
+.actions.power{flex-wrap:wrap}
+.power-msg{text-align:center;display:grid;gap:12px;padding:10px}

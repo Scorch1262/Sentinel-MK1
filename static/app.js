@@ -1089,11 +1089,33 @@ async function loadSettings() {
       (S.state.engines || []).some(x => x.state === 'fehler') ? el('button', {class: 'btn-mini', title: 'Streams und Erkennung werden dafür einige Minuten angehalten', onclick: async () => {
         if (!confirm('GPU-Engine erneut bauen? Streams und Erkennung pausieren dafür ca. 5–20 Minuten.')) return;
         await api('/api/engines/retry', {body: {}}); toast('Engine-Bau gestartet – siehe Protokoll'); }}, 'GPU-Engine erneut bauen') : null,
-      el('button', {class: 'btn-mini', onclick: async () => { if (!confirm('Sentinel neu starten?')) return; await api('/api/restart', {body: {}}); toast('Neustart …'); }}, 'Neu starten')),
+      el('button', {class: 'btn-mini', onclick: async () => { if (!confirm('Sentinel neu starten?')) return; await api('/api/restart', {body: {}}); toast('Neustart …'); }}, 'Sentinel neu starten')),
+    el('h4', null, 'Gerät'),
+    el('div', {class: 'actions power'},
+      el('button', {class: 'btn btn-ghost', onclick: () => powerAction('reboot')}, '⟳ Gerät neu starten'),
+      el('button', {class: 'btn btn-danger', onclick: () => powerAction('shutdown')}, '⏻ Herunterfahren')),
+    el('div', {class: 'hint'}, 'Laufende Aufnahmen werden vorher sauber abgeschlossen. Nach dem Herunterfahren das Netzteil erst trennen, wenn die grüne LED des Jetson aus ist.'),
     el('h4', null, 'Protokoll'), lg));
   if (S.state.fan && S.state.fan.available) box.append(fanPanel());
   box.append(updatePanel());
   updateSettingsStatus();
+}
+async function powerAction(act) {
+  const sd = act === 'shutdown';
+  if (!confirm(sd ? 'Gerät wirklich herunterfahren?\n\nDanach ist Sentinel erst wieder erreichbar, wenn der Jetson neu eingeschaltet wird.'
+                  : 'Gerät (Jetson) neu starten?\n\nSentinel ist danach ca. 1–2 Minuten nicht erreichbar.')) return;
+  try { await api('/api/system/power', {body: {action: act}}); } catch (e) { return toast(e.message); }
+  openModal(el('div', {class: 'power-msg'}, el('h2', null, sd ? 'Gerät fährt herunter …' : 'Gerät startet neu …'),
+    el('p', null, sd ? 'Sentinel wird beendet. Warte, bis die LED am Jetson aus ist, bevor du den Strom trennst.'
+                     : 'Diese Seite lädt automatisch neu, sobald Sentinel wieder läuft.'),
+    el('div', {class: 'prog'}, el('div', {class: 'prog-fill indet'}))), true);
+  if (!sd) {
+    let down = false;
+    const t = setInterval(async () => {
+      try { await fetch('/api/state', {cache: 'no-store'}).then(r => { if (!r.ok) throw 0; }); if (down) { clearInterval(t); location.reload(); } }
+      catch (e) { down = true; }
+    }, 3000);
+  }
 }
 /* ------------------------------------------------------------ Speicherort */
 function fmtBytes(n) {
@@ -1183,14 +1205,49 @@ function storagePanel(st) {
         el('span', {class: 'badge ' + (i.state === 'ersatz' ? 'warn' : 'ok')}, i.state === 'ok' ? 'aktiv' : i.state === 'ersatz' ? 'Ziel nicht erreichbar – speichert im Datenordner' : 'Datenordner'),
         el('span', {class: 'muted'}, ' · ' + fmtBytes(i.free) + ' frei von ' + fmtBytes(i.total)),
         i.loop ? el('span', {class: 'badge ok'}, 'Loop') : null,
-        i.migrating ? el('span', {class: 'muted'}, ' · Umzug: ' + i.migrating) : null,
         i.error ? el('div', {class: 'mono small err-line'}, i.error) : null].filter(Boolean));
+      renderJobs(i);
     } catch (e) { info.textContent = e.message; }
   };
+  const jobs = el('div', {class: 'jobs'});
+  const renderJobs = i => {
+    jobs.innerHTML = '';
+    const m = i.migrating, lm = i.last_migration, f = i.formatting;
+    if (m) {
+      const pct = m.bytes_total ? 100 * m.bytes_done / m.bytes_total : (m.files_total ? 100 * m.files_done / m.files_total : 0);
+      const el_s = (Date.now() / 1000 - m.started);
+      const rate = el_s > 2 ? m.bytes_done / el_s : 0;
+      const eta = rate > 0 ? (m.bytes_total - m.bytes_done) / rate : null;
+      jobs.append(el('div', {class: 'job'},
+        el('div', {class: 'job-head'}, el('b', null, m.phase === 'zählt' ? 'Umzug: Dateien werden gezählt …' : 'Umzug läuft'),
+          el('span', {class: 'grow'}), el('button', {class: 'btn-mini del', onclick: async () => { await api('/api/storage/migrate/cancel', {body: {}}); toast('Umzug wird abgebrochen …'); }}, 'Abbrechen')),
+        el('div', {class: 'prog'}, el('div', {class: 'prog-fill' + (m.phase === 'zählt' ? ' indet' : ''), style: {width: (m.phase === 'zählt' ? 100 : pct) + '%'}}),
+          el('span', {class: 'prog-txt mono'}, m.phase === 'zählt' ? '' : pct.toFixed(1) + ' %')),
+        el('div', {class: 'muted small mono'}, m.files_done + ' / ' + m.files_total + ' Dateien · ' + fmtBytes(m.bytes_done) + ' / ' + fmtBytes(m.bytes_total) +
+          (rate ? ' · ' + fmtBytes(rate) + '/s' : '') + (eta != null ? ' · noch ca. ' + fmtDur(eta) : '') + (m.errors ? ' · ' + m.errors + ' Fehler' : '')),
+        m.current ? el('div', {class: 'muted small mono ell'}, m.current) : null));
+    } else if (lm && Date.now() / 1000 - (lm.finished || 0) < 600) {
+      jobs.append(el('div', {class: 'job ' + (lm.phase === 'fertig' && !lm.errors ? 'done' : 'warn')},
+        el('b', null, 'Umzug ' + lm.phase), el('span', {class: 'muted small mono'}, ' ' + lm.files_done + ' von ' + lm.files_total + ' Dateien · ' + fmtBytes(lm.bytes_done) + (lm.errors ? ' · ' + lm.errors + ' Fehler' : ''))));
+    }
+    if (f && (!f.finished || Date.now() / 1000 - f.finished < 900)) {
+      jobs.append(el('div', {class: 'job' + (f.error ? ' warn' : f.finished ? ' done' : '')},
+        el('div', {class: 'job-head'}, el('b', null, 'Formatieren ' + f.dev + (f.model ? ' (' + f.model + ')' : '') + ' → ' + f.fs)),
+        el('div', {class: 'prog'}, el('div', {class: 'prog-fill', style: {width: f.pct + '%'}}), el('span', {class: 'prog-txt mono'}, f.pct + ' %')),
+        el('div', {class: 'small ' + (f.error ? 'err-line' : 'muted')}, f.error ? 'Fehler: ' + f.error : f.step)));
+    }
+    S.storBusy = !!(m || (f && !f.finished));
+  };
+  const pendBtn = el('button', {class: 'btn btn-ghost', hidden: true, onclick: async () => {
+    const r = await api('/api/storage/migrate', {body: {}}); if (!r.ok) toast(r.msg); refresh(); }}, '');
+  api('/api/storage/pending').then(p => { if (p.files) { pendBtn.hidden = false;
+    pendBtn.textContent = 'Ältere Dateien hierher holen (' + p.files + (p.files === 1 ? ' Datei, ' : ' Dateien, ') + fmtBytes(p.bytes) + ')'; } }).catch(() => {});
+  const fmtBtn = el('button', {class: 'btn btn-danger', onclick: () => openFormat(refresh)}, 'Laufwerk formatieren …');
+  const timer = setInterval(() => { if (!document.body.contains(jobs)) return clearInterval(timer); if (S.storBusy) refresh(); }, 1000);
   show(); refresh(); if (t.type === 'disk') scan();
   return el('div', {class: 'panel'}, el('h3', null, 'Speicherort für Bilder und Videos'),
     el('div', {class: 'space-bars', id: 'spaceBars'}, el('div', {class: 'muted small'}, 'Speicherplatz wird gemessen …')),
-    el('div', {class: 'form', style: {marginBottom: '10px'}}, el('label', null, 'Aktuell'), info), form, out,
+    el('div', {class: 'form', style: {marginBottom: '10px'}}, el('label', null, 'Aktuell'), info), jobs, form, out,
     el('div', {class: 'actions'},
       el('button', {class: 'btn btn-ghost', onclick: async e => {
         const b = e.target; b.disabled = true; b.textContent = 'Teste …';
@@ -1201,11 +1258,55 @@ function storagePanel(st) {
         const b = e.target; b.disabled = true;
         try {
           const r = await api('/api/config', {body: {section: 'storage', values: {target: target(), loop: lp.checked, loop_reserve_gb: +lr.value}, migrate: mig.checked}});
-          showRes(r.ok, r.ok ? 'Übernommen: ' + r.msg + (mig.checked ? ' – Dateien werden im Hintergrund verschoben' : '') : r.msg);
+          showRes(r.ok, r.ok ? 'Übernommen: ' + r.msg + (mig.checked ? ' – Dateien werden verschoben (Fortschritt oben)' : '') : r.msg);
           refresh();
         } catch (x) { showRes(false, x.message); }
         b.disabled = false;
-      }}, 'Übernehmen')));
+      }}, 'Übernehmen'), pendBtn, el('span', {class: 'grow'}), fmtBtn));
+}
+function fmtDur(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min ' + (s % 60) + ' s';
+  return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min';
+}
+async function openFormat(onStart) {
+  const list = el('div', {class: 'fmt-list'}, el('div', {class: 'muted'}, 'Laufwerke werden gesucht …'));
+  const fs = el('select', null, el('option', {value: 'ext4'}, 'ext4 (empfohlen)'),
+    el('option', {value: 'exfat'}, 'exFAT (auch Windows/Mac)'));
+  const use = el('input', {type: 'checkbox', checked: true});
+  const conf = el('input', {type: 'text', placeholder: 'FORMATIEREN', autocomplete: 'off'});
+  let sel = null;
+  const go = el('button', {class: 'btn btn-danger', disabled: true}, 'Jetzt formatieren');
+  const upd = () => { go.disabled = !(sel && conf.value.trim() === 'FORMATIEREN'); };
+  conf.oninput = upd;
+  openModal(el('div', null, el('h2', null, 'Laufwerk formatieren'),
+    el('p', {class: 'warn-box'}, '⚠ ALLE Daten auf dem gewählten Laufwerk werden unwiderruflich gelöscht. Systemspeicher (SD-Karte/eMMC) wird nicht angeboten.'),
+    el('h4', null, 'Laufwerk'), list,
+    el('div', {class: 'form'}, el('label', null, 'Format'), fs,
+      el('div', {class: 'hint'}, 'ext4 übersteht Stromausfälle am besten; exFAT kann man zusätzlich direkt am PC lesen.'),
+      el('label', null, ''), el('label', {class: 'chk'}, use, 'danach als Speicherort für Bilder und Videos verwenden'),
+      el('label', null, 'Bestätigen'), conf, el('div', {class: 'hint'}, 'Zum Bestätigen FORMATIEREN eintippen.')),
+    el('div', {class: 'actions'}, go)));
+  let devs = [];
+  try { devs = await api('/api/storage/devices'); } catch (e) { list.innerHTML = ''; list.append(el('div', {class: 'err-line'}, e.message)); return; }
+  list.innerHTML = '';
+  if (!devs.length) list.append(el('div', {class: 'muted'}, 'Kein externes Laufwerk gefunden – USB-Festplatte anschließen und Fenster neu öffnen.'));
+  devs.forEach(d => {
+    const r = el('input', {type: 'radio', name: 'fmtdev'});
+    r.onchange = () => { sel = d.dev; upd(); };
+    list.append(el('label', {class: 'fmt-dev'}, r, el('div', null,
+      el('b', null, (d.model || 'Laufwerk') + ' · ' + fmtBytes(d.size)), el('span', {class: 'muted small mono'}, ' ' + d.dev + (d.tran ? ' · ' + d.tran.toUpperCase() : '')),
+      el('div', {class: 'muted small'}, d.parts.length ? 'Enthält: ' + d.parts.map(p => (p.label || p.dev.replace('/dev/', '')) + ' (' + (p.fstype || '?') + ', ' + fmtBytes(p.size) + (p.mount ? ', eingebunden' : '') + ')').join(', ') : 'keine Partitionen'))));
+  });
+  go.onclick = async () => {
+    const d = devs.find(x => x.dev === sel);
+    if (!confirm('Letzte Warnung: ' + (d.model || d.dev) + ' (' + fmtBytes(d.size) + ') wird komplett gelöscht und als ' + fs.value + ' formatiert. Fortfahren?')) return;
+    try {
+      await api('/api/storage/format', {body: {dev: sel, fs: fs.value, use: use.checked, confirm: 'FORMATIEREN'}});
+      closeModal(); toast('Formatierung gestartet – Fortschritt im Speicherort-Bereich'); S.storBusy = true; onStart && onStart();
+    } catch (e) { toast(e.message); }
+  };
 }
 
 /* ------------------------------------------------------------ Ereignisse (Bewegung, Videos) */

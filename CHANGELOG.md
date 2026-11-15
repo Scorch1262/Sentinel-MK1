@@ -1,5 +1,22 @@
 # Änderungen
 
+## 2.7.0
+- Einstellungen → System: Knöpfe „Gerät neu starten“ und „Herunterfahren“ (Aufnahmen werden
+  vorher sauber abgeschlossen, Seite lädt nach dem Neustart automatisch neu)
+- Umzug zwischen Speicherorten mit Ladebalken: Dateien, MB, Geschwindigkeit, Restzeit, Abbrechen;
+  Knopf „Ältere Dateien hierher holen“; altes Laufwerk wird erst nach dem Umzug gelöst
+- Neuer Knopf „Laufwerk formatieren …“: GPT mit einer Partition, ext4 (empfohlen) oder exFAT,
+  danach auf Wunsch direkt als Speicherort; Systemspeicher und anderweitig eingebundene Laufwerke
+  ausgeschlossen, Bestätigung durch Eintippen
+- Behoben: Festplatte wurde nach dem Einschalten nicht wieder eingebunden bzw. Daten fehlten.
+  Ursachen: Laufwerk meldet sich nach dem Start zu spät (Wiederholung erst nach 2 min) und beim
+  Ausfall wurde in den leeren Einhängepunkt auf der SD-Karte geschrieben. Jetzt: Wiederholung alle
+  10 s nach dem Start, Prüfung „wirklich eingebunden?“, schreibgeschützter Einhängepunkt,
+  automatische Dateisystemreparatur, Zwischenspeicherung im Datenordner und anschließender
+  automatischer Umzug auf das Laufwerk
+- „Eigener Ordner“ merkt sich das Laufwerk dahinter und bindet es nach dem Einschalten selbst ein
+- Speicherziel wird beim Wechsel vollständig ersetzt (vorher blieben Werte des alten Ziels hängen)
+
 ## 2.6.1
 - MQTT: Es bleibt kein Wert mehr beim Broker gespeichert – Stream-Zustand und Speicherfüllstand
   werden ohne *retain* gesendet
