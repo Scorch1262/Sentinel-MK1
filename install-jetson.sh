@@ -9,6 +9,8 @@
 #     sudo bash install-jetson.sh --mit-desktop   grafische Oberflaeche wieder einschalten
 #     sudo bash install-jetson.sh --maxtakt       beim Start jetson_clocks (hoechste Taktraten)
 #     sudo bash install-jetson.sh --ohne-swap     keine Auslagerungsdatei anlegen
+#     sudo bash install-jetson.sh --mit-systemmonitor / --ohne-systemmonitor
+#                                                 System-Monitor-MQTT-MK1 (Port 8095) mit bzw. ohne Nachfrage
 #     sudo bash install-jetson.sh uninstall       Dienst entfernen (Daten bleiben erhalten)
 #
 #  Ohne entpackten Ordner (laedt alles von GitHub):
@@ -22,13 +24,14 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=2.8.0
+VERSION=2.9.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
 DESKTOP=ask
 MAXCLOCK=0
 SWAP=1
+SYSMON=ask
 ACTION=install
 
 while [ $# -gt 0 ]; do
@@ -40,6 +43,8 @@ while [ $# -gt 0 ]; do
         --desktop-lassen) DESKTOP=keep ;;
         --maxtakt|--jetson-clocks) MAXCLOCK=1 ;;
         --ohne-swap) SWAP=0 ;;
+        --mit-systemmonitor) SYSMON=on ;;
+        --ohne-systemmonitor) SYSMON=off ;;
         uninstall|--uninstall|deinstallieren) ACTION=uninstall ;;
         -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     esac
@@ -314,6 +319,30 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
     ufw allow "$PORT/tcp" >/dev/null && ok "Firewall (ufw): Port $PORT freigegeben"
 fi
 [ -n "$TMP" ] && rm -rf "$TMP"
+
+# ---------------------------------------------------------------------------
+# 10b) System-Monitor-MQTT-MK1 (optional): CPU/GPU/RAM/Temperaturen per MQTT
+# ---------------------------------------------------------------------------
+if [ "$SYSMON" = "ask" ]; then
+    if [ -f /opt/System-Monitor-MQTT-MK1/main.py ]; then
+        SYSMON=on                                   # schon da -> mit aktualisieren
+    elif [ -t 0 ]; then
+        read -r -p "[Sentinel] System-Monitor (CPU/GPU/RAM/Temperaturen per MQTT, Port 8095) mitinstallieren? [J/n] " a
+        case "$a" in n|N|nein) SYSMON=off ;; *) SYSMON=on ;; esac
+    else
+        SYSMON=off
+    fi
+fi
+if [ "$SYSMON" = "on" ]; then
+    log "Installiere System-Monitor-MQTT-MK1 ..."
+    if fetch "https://raw.githubusercontent.com/Scorch1262/System-Monitor-MQTT-MK1/main/install.sh" /tmp/sysmon-install.sh \
+            && sh < /tmp/sysmon-install.sh; then
+        ok "System-Monitor installiert (Einstellungen -> System-Monitor -> Oeffnen)"
+    else
+        log "WARNUNG: System-Monitor nicht installiert - spaeter in Sentinel unter Einstellungen nachholen"
+    fi
+    rm -f /tmp/sysmon-install.sh
+fi
 
 # ---------------------------------------------------------------------------
 # 11) Pruefen

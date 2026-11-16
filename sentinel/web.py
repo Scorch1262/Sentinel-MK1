@@ -95,6 +95,8 @@ class Api:
         if path == "/api/storage/locations":
             locs, ts = e.space.get()
             return dict(ts=ts, locations=locs, sentinel_root=e.media.root)
+        if path == "/api/sysmon":
+            return e.sysmon.status()
         if path == "/api/storage/devices":
             from .storage import list_block_devices
             return list_block_devices()
@@ -459,6 +461,15 @@ class Api:
             st = e.media.format_disk(body.get("dev") or "", body.get("fs") or "ext4",
                                      use_after=bool(body.get("use", True)))
             return dict(ok=True, formatting=st)
+        if path == "/api/sysmon/install":
+            e.sysmon.install()
+            return dict(ok=True)
+        if path == "/api/sysmon/restart":
+            e.sysmon.restart()
+            return dict(ok=True)
+        if path == "/api/sysmon/mqtt":
+            e.sysmon.adopt_mqtt(e.cfg.get("mqtt"))
+            return dict(ok=True)
         if path == "/api/system/power":
             act = body.get("action")
             if act not in ("shutdown", "reboot"):

@@ -18,6 +18,7 @@ from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
 from .recorder import Recorder
 from .storage import MediaStore, SpaceMonitor, topic_name
+from .sysmon import SysMon
 from .streams import StreamWorker, decoder_info, find_ffmpeg, mask_url
 
 
@@ -294,6 +295,7 @@ class Engine:
         self.mq_full = 0.0
         self.last_motion_ts = {}
         self.recorder = Recorder(self.log, self.data_dir)
+        self.sysmon = SysMon(self.log)      # System-Monitor-MQTT-MK1 (eigener Dienst)
         self.mot = {}               # stream_id -> Zustand der Bewegungserkennung
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
         # Aufnahmen, die beim letzten Beenden noch liefen, sind unvollstaendig -> Kennzeichen zuruecksetzen

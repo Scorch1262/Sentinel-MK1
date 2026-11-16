@@ -1,5 +1,12 @@
 # Änderungen
 
+## 2.9.0
+- System-Monitor-MQTT-MK1 eingebunden: Einstellungen → System-Monitor (MQTT) zeigt Zustand,
+  Version, Webseite und MQTT-Verbindung; Knöpfe **Öffnen**, Installieren/Aktualisieren (mit
+  Fortschritt), Neu starten und „MQTT von Sentinel übernehmen“
+- install-jetson.sh fragt, ob der System-Monitor mitinstalliert werden soll
+  (`--mit-systemmonitor` / `--ohne-systemmonitor`; ist er schon da, wird er mit aktualisiert)
+
 ## 2.8.0
 - Personen-Wiedererkennung am ganzen Körper (YoutuReID, OpenCV-Zoo, Apache-2.0): erkennt Personen
   auch ohne sichtbares Gesicht, von hinten und über Kameras hinweg. Im Test (Fußgänger-Video) bei

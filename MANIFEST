@@ -35,3 +35,4 @@ static/index.html
 sentinel/storage.py
 sentinel/recorder.py
 update_hook.py
+sentinel/sysmon.py

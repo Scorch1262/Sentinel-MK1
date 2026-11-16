@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.8.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.9.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -61,6 +61,9 @@ auftaucht.
 - Live-Ansicht: flüssiges Live-Bild oder exakt das analysierte Bild, Vollbild per Doppelklick,
   Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
 - **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit).
+- **System-Monitor eingebunden:** [System-Monitor-MQTT-MK1](https://github.com/Scorch1262/System-Monitor-MQTT-MK1)
+  sendet CPU, GPU, RAM, Temperaturen, Lüfter und Leistung des Jetson per MQTT – installieren,
+  aktualisieren und **öffnen** unter Einstellungen → System-Monitor.
 - **Gerät herunterfahren / neu starten** per Knopf unter Einstellungen → System (laufende
   Aufnahmen werden vorher abgeschlossen).
 - **Speicherverwaltung:** Bilder und Videos nach x Tagen bzw. ab x MB automatisch löschen – gelernte
@@ -295,6 +298,27 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
 - Fritzbox: Server `fritz.box`, Freigabe = Name des USB-Speichers an der Fritzbox, Benutzer mit
   NAS-Berechtigung; bei älteren Modellen SMB-Version 1.0 wählen.
 
+## System-Monitor (MQTT)
+
+[System-Monitor-MQTT-MK1](https://github.com/Scorch1262/System-Monitor-MQTT-MK1) ist ein eigenes
+Programm (eigener Dienst `system-monitor-mqtt`, Ordner `/opt/System-Monitor-MQTT-MK1`, Webseite
+Port **8095**). Es sendet CPU-Last, GPU-Last/-Takt/-Temperatur, RAM, Temperaturen, Lüfter und die
+Leistungsmesser des Jetson an einen MQTT-Broker (Standard-Topic `pc/<hostname>/…`, auf dessen
+Webseite änderbar).
+
+Unter **Einstellungen → System-Monitor (MQTT)**:
+
+| Knopf | Wirkung |
+|---|---|
+| **Öffnen ↗** | Webseite des System-Monitors in einem neuen Tab |
+| **Installieren / Aktualisieren** | holt `install.sh` aus GitHub und richtet den Dienst ein; Fortschritt wird angezeigt |
+| **Neu starten** | Dienst neu starten |
+| **MQTT von Sentinel übernehmen** | Broker, Port, Benutzer und Passwort aus Einstellungen → MQTT eintragen |
+
+Der Installer fragt bei der Einrichtung, ob der System-Monitor mitinstalliert werden soll
+(`--mit-systemmonitor` / `--ohne-systemmonitor`). Auf dem Jetson (Python 3.6) wird Version
+**1.4.0 oder neuer** benötigt.
+
 ## Kamera wird nicht angezeigt
 
 Unter **Einstellungen → Streams** hat jeder Stream den Knopf **Testen**. Der Jetson prüft dann
@@ -421,6 +445,7 @@ sentinel/
   engine.py            Streams, Analyse, Verfolgung, Wiedererkennung, Alarme, Aufräumen
   detector.py          YOLOX / NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
   trt.py               TensorRT-Ausführung auf der Jetson-GPU (CUDA per ctypes, ohne pycuda)
+  sysmon.py            Einbindung System-Monitor-MQTT-MK1 (Zustand, Installation, MQTT übernehmen)
   sysinfo.py           Geräteerkennung, GPU-Last, Temperatur, RAM
   fan.py               Lüfterregelung für den Jetson (PWM-Kurve)
   onnxlite.py          CPU-Rückfall: KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)
