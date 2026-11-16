@@ -184,6 +184,14 @@ class IdentityIndex:
                 self.objs[oid]["cls"] = cls
 
 
+def _clip_duration(path):
+    try:
+        from .recorder import _duration
+        return _duration(path) if path and os.path.exists(path) else None
+    except Exception:
+        return None
+
+
 def stream_mode(sc):
     """Analyse eines Streams: objects (KI-Objekterkennung) | motion (nur Bewegung) | off"""
     m = sc.get("analysis")
@@ -221,6 +229,9 @@ class Engine:
         self.store = Store(os.path.join(self.data_dir, "sentinel.db"))
         # Aufnahmen, die beim letzten Beenden noch liefen, sind unvollstaendig -> Kennzeichen zuruecksetzen
         self.store.x("UPDATE events SET rec=0 WHERE rec=1")
+        self.media.on_ready = self.rescan_media
+        if self.media.state != "ersatz":
+            threading.Thread(target=self.rescan_media, daemon=True).start()
         self.index = IdentityIndex(self.store)
         self.models = ModelManager(os.path.join(self.data_dir, "models"), self.log, wanted=self.wanted_models)
         self.fp_cache = None        # gelernte Fehlerkennungen (Liste), None = neu laden
@@ -1169,15 +1180,46 @@ class Engine:
         st = self.cfg.get("storage")
         if not st.get("loop"):
             return 0
+        if self.media.state == "ersatz":
+            return 0        # Ziel fehlt: NIE den Bestand (Datenbank) anfassen - die Dateien liegen auf dem Ziel
+        root = os.path.realpath(self.media.root) + os.sep
+
+        def here(*rels, kind="snaps"):
+            for r in rels:
+                if r:
+                    p = self.media.find(kind, r)
+                    if p and os.path.exists(p) and os.path.realpath(p).startswith(root):
+                        return True
+            return False
+
         with self.clean_lock:
             removed = 0
             reserve = self._reserve()
+            d_after = e_after = -1.0
             for _ in range(500):
                 free, _t = self._free()
                 if free is None or free >= reserve:
                     break
-                d1 = self.store.q("SELECT id, ts FROM detections ORDER BY ts LIMIT 50")
-                e1 = self.store.q("SELECT id, ts FROM events WHERE rec=0 ORDER BY ts LIMIT 10")
+                # nur Eintraege, deren Dateien wirklich auf dem vollen Speicherort liegen
+                d1, e1 = [], []
+                while not d1:
+                    rows = self.store.q("SELECT id, ts, img, crop FROM detections WHERE ts>? ORDER BY ts LIMIT 200",
+                                        (d_after,))
+                    if not rows:
+                        break
+                    d_after = rows[-1]["ts"]
+                    d1 = [r for r in rows if here(r["img"], r["crop"])][:50]
+                while not e1:
+                    rows = self.store.q("SELECT id, ts, img, clip FROM events WHERE rec=0 AND ts>? ORDER BY ts LIMIT 100",
+                                        (e_after,))
+                    if not rows:
+                        break
+                    e_after = rows[-1]["ts"]
+                    e1 = [r for r in rows if here(r["clip"], kind="clips") or here(r["img"])][:10]
+                if d1:
+                    d_after = d1[-1]["ts"]
+                if e1:
+                    e_after = e1[-1]["ts"]
                 if not d1 and not e1:
                     if time.time() - getattr(self, "_loop_warn", 0) > 3600:
                         self._loop_warn = time.time()
@@ -1199,6 +1241,102 @@ class Engine:
                     self.log("Loop: %d älteste Bilder/Videos überschrieben (Reserve %.1f GB)"
                              % (removed, reserve / 1073741824.0))
             return removed
+
+    def rescan_media(self, force=False):
+        """Bilder/Videos auf den Speicherorten, die (z. B. nach einem Ausfall) nicht mehr in der
+        Datenbank stehen, wieder aufnehmen - damit sie in Galerie und Ereignissen erscheinen."""
+        if getattr(self, "_rescanning", False):
+            return 0
+        self._rescanning = True
+        try:
+            time.sleep(1.0)
+            known = set()
+            for r in self.store.q("SELECT img, crop FROM detections"):
+                known.update(x for x in (r["img"], r["crop"]) if x)
+            for r in self.store.q("SELECT img, clip FROM events"):
+                known.update(x for x in (r["img"], r["clip"]) if x)
+            names = {sc["id"]: sc.get("name", sc["id"]) for sc in self.cfg.get("streams")}
+            found = {}                       # rel -> (kind, root)
+            for root in self.media.roots():
+                for kind in ("snaps", "clips"):
+                    base = os.path.join(root, kind)
+                    for dp, _, files in os.walk(base):
+                        for fn in files:
+                            if fn.endswith(".part"):
+                                continue
+                            rel = os.path.relpath(os.path.join(dp, fn), base).replace(os.sep, "/")
+                            if rel not in known and rel not in found:
+                                found[rel] = kind
+            if not found:
+                return 0
+
+            def ts_of(day, stamp):
+                try:
+                    hms, ms = (stamp.split("_") + ["0"])[:2]
+                    return time.mktime(time.strptime(day + " " + hms, "%Y-%m-%d %H%M%S")) + int(ms) / 1000.0
+                except Exception:
+                    return None
+            dets = {}
+            n_det = n_evt = 0
+            for rel, kind in sorted(found.items()):
+                if "/" not in rel:
+                    continue
+                day, fn = rel.split("/", 1)
+                stem, ext = os.path.splitext(fn)
+                if kind == "clips" and ext == ".mp4":
+                    parts = stem.split("_", 1)
+                    ts = ts_of(day, parts[0])
+                    if ts is None or len(parts) < 2:
+                        continue
+                    sid = parts[1]
+                    p = self.media.find("clips", rel)
+                    dur = _clip_duration(p)
+                    self.store.x("INSERT INTO events(ts, ts_end, stream_id, stream_name, kind, label, area, clip, "
+                                 "clip_dur, clip_size, rec) VALUES(?,?,?,?,?,?,?,?,?,?,0)",
+                                 (ts, ts + (dur or 0), sid, names.get(sid, sid), "motion", "Video (wiederhergestellt)", 0,
+                                  rel, dur, os.path.getsize(p) if p and os.path.exists(p) else None))
+                    n_evt += 1
+                    continue
+                if kind != "snaps":
+                    continue
+                if stem.endswith("_bewegung"):
+                    bits = stem.split("_")
+                    ts = ts_of(day, "_".join(bits[:2]))
+                    if ts is None or len(bits) < 4:
+                        continue
+                    sid = "_".join(bits[2:-1])
+                    self.store.x("INSERT INTO events(ts, ts_end, stream_id, stream_name, kind, label, area, img, rec) "
+                                 "VALUES(?,?,?,?,?,?,?,?,0)", (ts, ts, sid, names.get(sid, sid), "motion", "Bewegung", 0, rel))
+                    n_evt += 1
+                    continue
+                key = stem[:-2] if stem.endswith("_c") else stem
+                d = dets.setdefault(day + "/" + key, {})
+                d["crop" if stem.endswith("_c") else "img"] = rel
+            for k, d in dets.items():
+                day, base = k.split("/", 1)
+                bits = base.split("_")
+                if len(bits) < 5:
+                    continue
+                ts = ts_of(day, "_".join(bits[:2]))
+                if ts is None:
+                    continue
+                cls = bits[-2].replace("-", " ")
+                sid = "_".join(bits[2:-2])
+                self.store.x(
+                    "INSERT INTO detections(ts, stream_id, stream_name, cls, score, x1, y1, x2, y2, object_id, track, "
+                    "sighting, face, match, sim, img, crop) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ts, sid, names.get(sid, sid), cls, 0.0, 0.0, 0.0, 1.0, 1.0, None, "import-" + bits[-1],
+                     1, 0, "import", 0.0, d.get("img"), d.get("crop") or d.get("img")))
+                n_det += 1
+            if n_det or n_evt:
+                self.log("Bestand eingelesen: %d Erkennungen und %d Ereignisse/Videos wieder in Galerie und "
+                         "Ereignissen (Zuordnung zu Personen ggf. neu vornehmen)" % (n_det, n_evt))
+            return n_det + n_evt
+        except Exception as e:
+            self.log("Bestand einlesen: %s" % e)
+            return 0
+        finally:
+            self._rescanning = False
 
     # ------------------------------------------------------------------
     # Status je Stream und Speicherfuellstand (UI + MQTT)
@@ -1807,6 +1945,8 @@ class Engine:
 
     def cleanup(self):
         st = self.cfg.get("storage")
+        if self.media.state == "ersatz":
+            return 0        # Speicherort fehlt gerade: Bestand nicht anfassen
         days = float(st.get("max_days", 30) or 0)
         removed = 0
         if days > 0:

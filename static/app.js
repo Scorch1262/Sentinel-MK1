@@ -1262,7 +1262,18 @@ function storagePanel(st) {
           refresh();
         } catch (x) { showRes(false, x.message); }
         b.disabled = false;
-      }}, 'Übernehmen'), pendBtn, el('span', {class: 'grow'}), fmtBtn));
+      }}, 'Übernehmen'), pendBtn, el('span', {class: 'grow'}),
+      el('button', {class: 'btn btn-ghost', title: 'Wie Abziehen und wieder Anstecken: alle USB-Geräte werden neu erkannt (kurz unterbrochen)', onclick: async e => {
+        const b = e.target; b.disabled = true; b.textContent = 'USB wird neu erkannt …';
+        try { const r = await api('/api/storage/usb_rescan', {body: {}}); toast(r.storage.state === 'ok' ? 'Laufwerk eingebunden' : 'USB neu erkannt – ' + (r.storage.error || 'Laufwerk nicht gefunden')); refresh(); }
+        catch (x) { toast(x.message); }
+        b.disabled = false; b.textContent = 'USB neu erkennen'; }}, 'USB neu erkennen'),
+      el('button', {class: 'btn btn-ghost', title: 'Bilder und Videos, die auf den Speicherorten liegen, aber nicht in der Galerie stehen, wieder aufnehmen', onclick: async e => {
+        const b = e.target; b.disabled = true; b.textContent = 'Lese ein …';
+        try { const r = await api('/api/storage/rescan', {body: {}}); toast(r.added ? r.added + ' Einträge wiederhergestellt' : 'Alles vollständig – nichts fehlte'); }
+        catch (x) { toast(x.message); }
+        b.disabled = false; b.textContent = 'Bestand neu einlesen'; }}, 'Bestand neu einlesen'),
+      fmtBtn));
 }
 function fmtDur(s) {
   s = Math.max(0, Math.round(s));

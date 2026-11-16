@@ -13,6 +13,7 @@ und regelmaessig erneut versucht. Gelesen wird immer aus allen bekannten Orten, 
 Bilder nach einem Wechsel sichtbar bleiben.
 """
 
+import glob
 import json
 import os
 import shutil
@@ -93,6 +94,40 @@ def dev_by_uuid(uuid):
     rc, out, _ = _run(["blkid", "-U", uuid], 15)
     out = out.strip()
     return out if rc == 0 and out.startswith("/dev/") and os.path.exists(out) else None
+
+
+def uptime():
+    try:
+        return float(open("/proc/uptime").read().split()[0])
+    except Exception:
+        return 1e9
+
+
+def usb_rescan(log=None):
+    """USB neu erkennen - wie Abziehen und wieder Anstecken.
+    Manche USB-3-Festplatten werden am Jetson Nano nach dem Einschalten nicht erkannt (Strom beim
+    Start, Firmware des USB-3-Controllers). Ein kurzes Ab- und Wiederanmelden der USB-Root-Hubs
+    zaehlt alle Geraete neu auf. Kurz betroffen sind alle USB-Geraete (z. B. ein WLAN-Stick)."""
+    hubs = sorted(glob.glob("/sys/bus/usb/devices/usb*/authorized"))
+    if not hubs:
+        return False
+    for h in hubs:
+        try:
+            with open(h, "w") as f:
+                f.write("0")
+        except OSError:
+            pass
+    time.sleep(2)
+    for h in hubs:
+        try:
+            with open(h, "w") as f:
+                f.write("1")
+        except OSError:
+            pass
+    _run(["udevadm", "settle", "-t", "20"], 30)
+    if log:
+        log("USB neu erkannt (%d Hubs)" % len(hubs))
+    return True
 
 
 def protect_mountpoint(path):
@@ -215,6 +250,8 @@ class MediaStore(object):
         self.formatting = None      # Fortschritt einer Formatierung (dict) oder None
         self.mnt = None             # Einhaengepunkt, der fuer den aktiven Ort eingebunden sein muss
         self.started = time.time()
+        self.usb_resets = 0
+        self.on_ready = None        # Rueckruf, wenn der Speicherort (wieder) verfuegbar ist
         protect_mountpoint(DISK_MNT)
         protect_mountpoint(NAS_MNT)
         self.apply(initial=True)
@@ -425,6 +462,8 @@ class MediaStore(object):
                                       done=lambda: self.cfg.update("storage", dict(fallback_since=None)))
                 elif self.state == "lokal" and since:
                     self.cfg.update("storage", dict(fallback_since=None))
+                if (was_fallback or initial or changed) and self.on_ready:
+                    threading.Thread(target=self.on_ready, daemon=True).start()
                 return True, root
             except Exception as e:
                 self.root = self.local_root
@@ -434,6 +473,13 @@ class MediaStore(object):
                     self.cfg.update("storage", dict(fallback_since=time.time()))
                 if str(e) != self.error:
                     self.log("Speicherort nicht verfügbar: %s - speichere vorerst im Datenordner" % e)
+                    if t.get("type") == "disk":
+                        try:
+                            seen = ", ".join("%s %s %s" % (d["dev"], d["fstype"], d["label"] or d["uuid"][:8])
+                                             for d in list_disks()) or "keine"
+                        except Exception:
+                            seen = "?"
+                        self.log("Gesucht: UUID %s - erkannte Laufwerke: %s" % (t.get("uuid"), seen))
                 self.error = str(e)
                 for k in ("snaps", "clips"):
                     os.makedirs(os.path.join(self.local_root, k), exist_ok=True)
@@ -462,6 +508,18 @@ class MediaStore(object):
             wait = 10 if time.time() - self.started < 900 else 60
             if time.time() - self.last_try > wait:
                 self.apply()
+            # Festplatte nach dem Einschalten nicht aufgetaucht? USB einmal neu erkennen lassen
+            t = self._target()
+            el = time.time() - self.started
+            if self.state == "ersatz" and t.get("type") == "disk" and t.get("uuid") and \
+                    not dev_by_uuid(t["uuid"]) and uptime() < 1200 and \
+                    ((self.usb_resets == 0 and el > 40) or (self.usb_resets == 1 and el > 180)):
+                self.usb_resets += 1
+                self.log("Festplatte nach dem Start nicht gefunden - lasse USB neu erkennen (Versuch %d/2)"
+                         % self.usb_resets)
+                if usb_rescan(self.log):
+                    time.sleep(5)
+                    self.apply()
 
     def test(self, t):
         """Ziel testen, ohne es zu uebernehmen. -> dict"""

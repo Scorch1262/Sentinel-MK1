@@ -1,5 +1,17 @@
 # Änderungen
 
+## 2.7.1
+- Behoben: Bilder/Videos verschwanden nach einem Neustart aus der Galerie. Ursache: Fehlte die
+  Festplatte beim Start, maß der Loop-Betrieb den freien Platz des Datenordners (SD-Karte) und
+  löschte dafür die ältesten Einträge aus der Datenbank – die Dateien auf der Festplatte blieben,
+  waren aber nicht mehr sichtbar. Jetzt: Im Ersatzbetrieb wird nichts gelöscht, und der
+  Loop-Betrieb löscht nur Einträge, deren Dateien tatsächlich auf dem vollen Speicherort liegen
+- Neu: Bestand einlesen – Bilder und Videos auf den Speicherorten, die nicht in der Datenbank
+  stehen, werden wieder aufgenommen (automatisch, sobald ein Speicherort verfügbar wird, und per
+  Knopf „Bestand neu einlesen“); damit kommen bereits verschwundene Einträge zurück
+- Festplatte nach dem Einschalten nicht erkannt: automatische USB-Neuerkennung nach 40 s und 3 min
+  (wie Abziehen/Anstecken), Knopf „USB neu erkennen“, Protokoll nennt die erkannten Laufwerke
+
 ## 2.7.0
 - Einstellungen → System: Knöpfe „Gerät neu starten“ und „Herunterfahren“ (Aufnahmen werden
   vorher sauber abgeschlossen, Seite lädt nach dem Neustart automatisch neu)

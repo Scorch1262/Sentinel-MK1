@@ -431,6 +431,15 @@ class Api:
             if not e.media.migrate_from(others):
                 return dict(ok=False, msg="Nichts zu verschieben oder Umzug läuft bereits")
             return dict(ok=True)
+        if path == "/api/storage/rescan":
+            n = e.rescan_media(force=True)
+            return dict(ok=True, added=n)
+        if path == "/api/storage/usb_rescan":
+            from .storage import usb_rescan
+            ok = usb_rescan(e.log)
+            time.sleep(3)
+            e.media.apply()
+            return dict(ok=ok, storage=e.media.info())
         if path == "/api/storage/migrate/cancel":
             e.media.cancel_migration()
             return dict(ok=True)

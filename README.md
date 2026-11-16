@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.7.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.7.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -268,6 +268,15 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
   auf das Laufwerk verschoben.
 - Ist das Laufwerk nicht eingebunden, wird **nie** in den leeren Einhängepunkt (also auf die
   SD-Karte/eMMC) geschrieben – der Einhängepunkt ist schreibgeschützt.
+- Wird die Festplatte nach dem Einschalten gar nicht erkannt (bekanntes Verhalten mancher
+  USB-3-Festplatten am Jetson Nano – sie tauchen erst nach Ab- und Anstecken auf), lässt Sentinel
+  USB nach 40 s und nach 3 min automatisch neu erkennen – wie Abziehen und Anstecken. Von Hand:
+  Knopf **USB neu erkennen**. Im Protokoll steht, welche Laufwerke erkannt wurden. Hilft das nicht,
+  braucht die Festplatte meist mehr Strom: aktiven USB-Hub oder Festplatte mit eigenem Netzteil nutzen.
+- Solange der Speicherort fehlt, wird **nichts gelöscht** (weder Loop-Betrieb noch Aufräumen).
+- **Bestand neu einlesen** nimmt Bilder und Videos, die auf einem Speicherort liegen, aber nicht
+  (mehr) in der Galerie stehen, wieder auf – passiert auch automatisch, sobald ein Speicherort
+  (wieder) verfügbar ist. Zuordnungen zu Personen müssen dann ggf. neu vorgenommen werden.
 - **Umzug** mit Ladebalken: Dateien, Datenmenge, Geschwindigkeit und Restzeit; abbrechbar.
   „Ältere Dateien hierher holen“ holt Bilder/Videos aus früheren Speicherorten.
 - **Laufwerk formatieren …** richtet eine USB-Festplatte/-Stick neu ein: eine Partition,

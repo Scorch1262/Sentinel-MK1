@@ -330,3 +330,5 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .fmt-dev input{margin-top:3px}
 .actions.power{flex-wrap:wrap}
 .power-msg{text-align:center;display:grid;gap:12px;padding:10px}
+.actions{flex-wrap:wrap}
+.actions .btn{white-space:normal;max-width:100%;text-align:center}
