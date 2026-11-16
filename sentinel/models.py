@@ -46,6 +46,10 @@ MODELS = {
     "face_rec": dict(file="face_recognition_sface_2021dec.onnx", path="face_recognition_sface/",
                      size=38696353, sha256="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
                      title="SFace (Personen wiedererkennen)", license="Apache-2.0"),
+    # Personen-Wiedererkennung am ganzen Koerper (Statur, Kleidung, Haltung) - 768-dim. Merkmal
+    "body_reid": dict(file="person_reid_youtu_2021nov.onnx", path="person_reid_youtureid/",
+                      size=106878407, sha256="0579683334d4b9440221606dcb461656dd0dc64143b18f48faedaced9b4f580d",
+                      title="YoutuReID (Personen am Körper wiedererkennen)", license="Apache-2.0"),
 }
 
 
@@ -98,7 +102,9 @@ class ModelManager:
     # TensorRT-Engines (nur Jetson): einmalig aus den ONNX-Modellen bauen
     # ------------------------------------------------------------------
     ENGINES = {"detector": "nanodet_416", "yolox_tiny": "yolox_tiny_416", "yolox_s": "yolox_s_640", "yolox_m": "yolox_m_640",
-               "face_rec": "sface_112"}
+               "face_rec": "sface_112", "body_reid": "reid_256x128"}
+    # Modelle mit variabler Batch-Groesse brauchen feste Eingangsform fuer trtexec
+    SHAPES = {"body_reid": "input:1x3x256x128"}
 
     def engine_path(self, key):
         from . import trt
@@ -159,7 +165,7 @@ class ModelManager:
                     if self.engine_ok(k) or self.state.get(k) != "ok" or self.engine_state.get(k) == "fehler":
                         continue
                     self.engine_state[k] = "baut"
-                    ok = trt.build_engine(self.path(k), self.engine_path(k), self.log)
+                    ok = trt.build_engine(self.path(k), self.engine_path(k), self.log, shapes=self.SHAPES.get(k))
                     self.engine_state[k] = "ok" if ok else "fehler"
                     mark = self.engine_path(k) + ".failed"
                     try:

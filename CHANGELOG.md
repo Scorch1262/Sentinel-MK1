@@ -1,5 +1,25 @@
 # Änderungen
 
+## 2.8.0
+- Personen-Wiedererkennung am ganzen Körper (YoutuReID, OpenCV-Zoo, Apache-2.0): erkennt Personen
+  auch ohne sichtbares Gesicht, von hinten und über Kameras hinweg. Im Test (Fußgänger-Video) bei
+  höchstens 1 % Verwechslungen 90 % Treffer statt 32 % mit dem bisherigen Farbhistogramm.
+  Auf dem Jetson als TensorRT-Engine (einmaliger Bau), sonst OpenCV/CPU
+- Zuweisungen wirken jetzt wirklich: von Hand zugewiesene Bilder sind feste Beispiele ohne
+  Zeitfenster (bisher zählten Personen ohne Gesicht nur 12 h lang über die Kleidung)
+- Vergleich über das Mittel der 3 ähnlichsten Beispiele, Mindestabstand zur zweitbesten Person;
+  Personen werden nicht mehr über das Farbhistogramm zugeordnet (Hauptursache für Verwechslungen)
+- Schutz vor „Verwässern“: automatisch nur passende Beispiele lernen, verdeckte und zu kleine
+  Personen nicht verwenden, Spurwechsel (Personen kreuzen sich) erkennen und Spur beenden,
+  beim Umbuchen keine fremden Beispiele mitnehmen
+- Nachprüfung neuer Personen mit weiteren Bildern derselben Spur (bis 6×) – Umbuchen auf die
+  bekannte Person
+- Beim Objekt: „Sieht aus wie …“ – ähnliche Bilder mit Prozentwert bestätigen oder als
+  „jemand anderes“ ablehnen (Gegenbeispiele)
+- Einmalige Nachberechnung der Körpermerkmale für vorhandene Personenbilder; bisherige Zuweisungen
+  werden zu Lernbeispielen
+- Einstellungen → Wiedererkennung: Körpermerkmale an/aus, Schwelle, Gültigkeit gelernter Beispiele
+
 ## 2.7.1
 - Behoben: Bilder/Videos verschwanden nach einem Neustart aus der Galerie. Ursache: Fehlte die
   Festplatte beim Start, maß der Loop-Betrieb den freien Platz des Datenordners (SD-Karte) und

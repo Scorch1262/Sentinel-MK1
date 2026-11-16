@@ -457,6 +457,8 @@ class OnnxModel:
                 ax = ax - 1 if ax > 0 else ax
                 e = np.exp(x - x.max(axis=ax, keepdims=True))
                 y = e / e.sum(axis=ax, keepdims=True)
+            elif op == "GlobalAveragePool":
+                y = x.mean(axis=tuple(range(1, x.ndim)), keepdims=True)
             elif op == "BatchNormalization":
                 sc, bi, mu, va = ins[1:5]
                 eps = a.get("epsilon", 1e-5)

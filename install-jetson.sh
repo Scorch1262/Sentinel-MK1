@@ -22,7 +22,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=2.7.1
+VERSION=2.8.0
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -197,6 +197,8 @@ getmodel face_detection_yunet face_detection_yunet_2023mar.onnx 232589 8f2383e4d
 getmodel face_recognition_sface face_recognition_sface_2021dec.onnx 38696353 0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79
 # YOLOX-S: deutlich genaueres Erkennungsmodell fuer die GPU (Standard auf dem Jetson)
 getmodel object_detection_yolox object_detection_yolox_2022nov.onnx 35858002 c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063
+# YoutuReID: Personen am ganzen Koerper wiedererkennen (auch ohne sichtbares Gesicht)
+getmodel person_reid_youtureid person_reid_youtu_2021nov.onnx 106878407 0579683334d4b9440221606dcb461656dd0dc64143b18f48faedaced9b4f580d
 
 # ---------------------------------------------------------------------------
 # 6) TensorRT-Engines bauen (GPU, FP16) - einmalig, je nach Modell 3-15 Minuten
@@ -204,7 +206,7 @@ getmodel object_detection_yolox object_detection_yolox_2022nov.onnx 35858002 c5c
 TRTEXEC=/usr/src/tensorrt/bin/trtexec
 if [ -n "$TRTV" ] && [ -x "$TRTEXEC" ]; then
     TV=$(echo "$TRTV" | tr '.' '_')
-    build() {   # onnx engine-name
+    build() {   # onnx engine-name [eingangsform]
         local e="$DIR/data/models/$2_fp16_trt$TV.engine"
         [ -s "$e" ] && { ok "GPU-Engine $2 vorhanden"; return 0; }
         [ -f "$DIR/data/models/$1" ] || return 1
@@ -212,6 +214,7 @@ if [ -n "$TRTV" ] && [ -x "$TRTEXEC" ]; then
         local t0=$(date +%s)
         local extra=""
         case "$TRTV" in 8.*|9.*|1[0-9].*) extra="--tacticSources=-cublasLt,-cublas,-cudnn" ;; esac
+        [ -n "$3" ] && extra="$extra --minShapes=$3 --optShapes=$3 --maxShapes=$3"
         if "$TRTEXEC" --onnx="$DIR/data/models/$1" --saveEngine="$e.part" --fp16 --workspace=256 $extra \
                 > "$DIR/data/models/$2.trtexec.log" 2>&1 && [ -s "$e.part" ]; then
             mv -f "$e.part" "$e"
@@ -225,6 +228,7 @@ if [ -n "$TRTV" ] && [ -x "$TRTEXEC" ]; then
     build object_detection_yolox_2022nov.onnx yolox_s_640
     build object_detection_nanodet_2022nov.onnx nanodet_416
     build face_recognition_sface_2021dec.onnx sface_112
+    build person_reid_youtu_2021nov.onnx reid_256x128 input:1x3x256x128
 else
     log "WARNUNG: TensorRT/trtexec fehlt - Objekterkennung laeuft auf der CPU (deutlich langsamer)"
 fi

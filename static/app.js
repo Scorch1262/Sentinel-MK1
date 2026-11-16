@@ -606,10 +606,49 @@ async function openObject(id) {
       el('span', null, 'Erstmals'), el('span', null, fmtTime(o.first_seen, 'full')),
       el('span', null, 'Zuletzt'), el('span', null, fmtTime(o.last_seen, 'full') + ' (' + ago(o.last_seen) + ')'),
       el('span', null, 'Streams'), el('span', null, o.streams.join(', ') || '–'),
-      el('span', null, 'Gelernt'), el('span', null, (smp.face || 0) + ' Gesichter, ' + (smp.app || 0) + ' Aussehen-Beispiele' +
-        ((smp.face_neg || smp.app_neg) ? ', ' + ((smp.face_neg || 0) + (smp.app_neg || 0)) + ' Gegenbeispiele aus Korrekturen' : ''))),
+      el('span', null, 'Gelernt'), el('span', null, (smp.face || 0) + ' Gesichter, ' + (o.cls === 'person' ? (smp.body || 0) + ' Körper, ' : '') + (smp.app || 0) + ' Aussehen-Beispiele' +
+        ((smp.face_neg || smp.app_neg || smp.body_neg) ? ', ' + ((smp.face_neg || 0) + (smp.app_neg || 0) + (smp.body_neg || 0)) + ' Gegenbeispiele aus Korrekturen' : ''))),
+    o.cls === 'person' ? suggestBox(o) : null,
     el('h4', null, 'Bilder – zum Korrigieren auswählen'),
     o.items.length ? grid : el('div', {class: 'empty'}, el('b', null, 'Noch keine Bilder'), 'Mit „+ Erkennungen zuweisen“ Bilder aus der Galerie hinzufügen.'), bar));
+}
+
+/* Vorschlaege: Bilder, die dieser Person aehneln (Koerpermerkmal) */
+function suggestBox(o) {
+  const box = el('div', {class: 'sugg'}, el('h4', null, 'Sieht aus wie ' + o.label), el('div', {class: 'muted small'}, 'Ähnliche Bilder werden gesucht …'));
+  const sel = new Set();
+  (async () => {
+    let r;
+    try { r = await api('/api/objects/' + o.id + '/suggest'); } catch (e) { box.lastChild.textContent = e.message; return; }
+    box.innerHTML = '';
+    box.append(el('h4', null, 'Sieht aus wie ' + o.label + (r.items.length ? ' (' + r.items.length + ')' : '')));
+    if (!r.samples) { box.append(el('div', {class: 'muted small'}, r.ready ? 'Noch keine Körper-Beispiele – erst einige Bilder zuweisen.' : 'Körpermerkmale werden noch geladen bzw. nachberechnet …')); return; }
+    if (!r.items.length) { box.append(el('div', {class: 'muted small'}, 'Keine weiteren ähnlichen Bilder aus den letzten 30 Tagen.')); return; }
+    box.append(el('div', {class: 'muted small'}, 'Bestätige die richtigen (vorausgewählt: sehr ähnlich). Beides lernt Sentinel – Zugewiesenes als festes Beispiel, Abgelehntes als Gegenbeispiel.'));
+    const grid = el('div', {class: 'gal sugg-grid'});
+    const cnt = el('b');
+    const upd = () => cnt.textContent = sel.size + ' ausgewählt';
+    r.items.forEach(d => {
+      if (d.score >= 0.62) sel.add(d.id);
+      const c = detCard(d, {select: sel, onsel: upd, toggle: id => { sel.has(id) ? sel.delete(id) : sel.add(id); c.querySelector('input.sel').checked = sel.has(id); upd(); }});
+      c.append(el('span', {class: 'sim-badge ' + (d.score >= 0.62 ? 'hi' : d.score >= 0.52 ? 'mid' : 'lo')}, Math.round(d.score * 100) + ' %'));
+      grid.append(c);
+    });
+    upd();
+    box.append(grid, el('div', {class: 'actions'}, cnt,
+      el('button', {class: 'btn', onclick: async () => {
+        if (!sel.size) return toast('Nichts ausgewählt');
+        try { const x = await api('/api/detections/assign', {body: {ids: [...sel], target: o.id}}); toast((x.moved || sel.size) + ' Bilder zugewiesen – Sentinel lernt daraus'); openObject(o.id); loadObjects(); }
+        catch (e) { toast(e.message); }
+      }}, 'Ausgewählte sind ' + o.label),
+      el('button', {class: 'btn btn-ghost', onclick: async () => {
+        const rest = r.items.map(d => d.id).filter(i => !sel.has(i));
+        if (!rest.length) return toast('Alle sind ausgewählt');
+        try { const x = await api('/api/objects/' + o.id + '/reject', {body: {ids: rest}}); toast(x.learned + ' Gegenbeispiele gelernt'); openObject(o.id); }
+        catch (e) { toast(e.message); }
+      }}, 'Nicht ausgewählte sind jemand anderes')));
+  })();
+  return box;
 }
 
 /* Person/Objekt von Hand anlegen */
@@ -1013,19 +1052,25 @@ async function loadSettings() {
   const fa = el('input', {type: 'checkbox', checked: I.faces}), ft = numIn(I.face_threshold, {min: .2, max: .9, step: .01});
   const fm = numIn(I.face_min_px, {min: 12}), at = numIn(I.appearance_threshold, {min: .5, max: .99, step: .01});
   const aw = numIn(I.appearance_window_h, {min: 0, step: 1}), ao = numIn(I.appearance_window_other_h, {min: 0, step: 1}), mx = numIn(I.max_samples, {min: 5});
+  const bo = el('input', {type: 'checkbox', checked: I.body !== false}), bt = numIn(I.body_threshold != null ? I.body_threshold : 0.60, {min: .3, max: .9, step: .01});
+  const bw = numIn(I.body_window_h != null ? I.body_window_h : 72, {min: 0, step: 1});
   box.append(el('div', {class: 'panel'}, el('h3', null, 'Wiedererkennung'),
-    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Personen werden über das Gesicht (SFace) einzeln wiedererkannt, ohne sichtbares Gesicht über Kleidung/Farben. ',
-      'Andere Objekte (Tiere, Fahrzeuge) über ihr Aussehen. Korrekturen in der Galerie oder beim Objekt verbessern die Zuordnung.'),
+    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Personen werden über das Gesicht (SFace) und – auch ohne sichtbares Gesicht – über Körper, Statur und Kleidung (YoutuReID) wiedererkannt. ',
+      'Andere Objekte (Tiere, Fahrzeuge) über ihr Aussehen. Jede Zuweisung von Hand wird ein festes Lernbeispiel; beim Objekt schlägt Sentinel ähnliche Bilder vor.'),
     el('div', {class: 'form'},
       el('label', null, 'Gesichter'), el('label', {class: 'chk'}, fa, 'Gesichter suchen und vergleichen'),
       el('label', null, 'Gesicht gleich ab'), ft, el('div', {class: 'hint'}, 'Ähnlichkeit 0–1; höher = strenger (Standard 0,40)'),
       el('label', null, 'Gesicht mind.'), el('div', {class: 'row'}, fm, ' px breit'),
+      el('label', null, 'Personen am Körper'), el('label', {class: 'chk'}, bo, 'Körpermerkmale nutzen (empfohlen)'),
+      el('label', null, 'Körper gleich ab'), bt, el('div', {class: 'hint'}, 'Ähnlichkeit 0–1 (Mittel der 3 ähnlichsten Beispiele); höher = strenger (Standard 0,60)'),
+      el('label', null, 'Gelerntes gilt'), el('div', {class: 'row'}, bw, ' h (von Hand Zugewiesenes gilt immer)'),
       el('label', null, 'Aussehen gleich ab'), at, el('div', {class: 'hint'}, 'höher = weniger Verwechslungen, aber mehr neue Objekte (Standard 0,90)'),
       el('label', null, 'Personen über Aussehen'), el('div', {class: 'row'}, aw, ' h nach letzter Sichtung'),
       el('label', null, 'Andere über Aussehen'), el('div', {class: 'row'}, ao, ' h nach letzter Sichtung'),
       el('label', null, 'Lernbeispiele je Objekt'), mx),
     el('div', {class: 'actions'}, el('button', {class: 'btn', onclick: () => saveSection('identity', {faces: fa.checked, face_threshold: +ft.value,
-      face_min_px: +fm.value, appearance_threshold: +at.value, appearance_window_h: +aw.value, appearance_window_other_h: +ao.value, max_samples: +mx.value})}, 'Speichern'))));
+      face_min_px: +fm.value, appearance_threshold: +at.value, appearance_window_h: +aw.value, appearance_window_other_h: +ao.value, max_samples: +mx.value,
+      body: bo.checked, body_threshold: +bt.value, body_window_h: +bw.value})}, 'Speichern'))));
   /* Alarme / MQTT */
   const M = C.mqtt;
   const me = el('input', {type: 'checkbox', checked: M.enabled}), mhst = el('input', {type: 'text', value: M.host}), mp = numIn(M.port, {min: 1, max: 65535});

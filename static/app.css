@@ -332,3 +332,10 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .power-msg{text-align:center;display:grid;gap:12px;padding:10px}
 .actions{flex-wrap:wrap}
 .actions .btn{white-space:normal;max-width:100%;text-align:center}
+
+/* v2.8.0 Vorschlaege */
+.sugg{margin-top:6px}
+.sugg-grid .card{position:relative}
+.sim-badge{position:absolute;right:6px;top:6px;font-size:11px;font-weight:700;padding:1px 7px;border-radius:10px;background:rgba(0,0,0,.75);color:#fff}
+.sim-badge.hi{background:var(--accent-2);color:#000}
+.sim-badge.mid{background:var(--accent);color:#000}

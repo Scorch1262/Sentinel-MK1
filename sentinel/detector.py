@@ -342,6 +342,57 @@ class FaceEngine:
         return (f / n).astype(np.float32) if n > 0 else None
 
 
+class BodyReID:
+    """Personen-Wiedererkennung am ganzen Koerper (YoutuReID, 768-dim. Merkmal, Kosinus-Aehnlichkeit).
+    Deutlich trennschaerfer als ein Farbhistogramm: erkennt dieselbe Person in anderer Haltung,
+    aus anderem Winkel und in einer anderen Kamera."""
+
+    MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+    STD = np.array([0.229, 0.224, 0.225], np.float32)
+    W, H = 128, 256
+
+    def __init__(self, onnx_path, engine=None):
+        import threading
+        self.lock = threading.Lock()
+        self.gpu = False
+        self.net = None
+        self.cvnet = None
+        if engine:
+            from .trt import TrtModel
+            self.net = TrtModel(engine)
+            self.gpu = True
+            self.backend = "TensorRT (GPU)"
+            return
+        try:
+            import cv2
+            self.cvnet = cv2.dnn.readNetFromONNX(onnx_path)
+            self.backend = "OpenCV (CPU)"
+            return
+        except Exception:
+            self.cvnet = None
+        self.net = OnnxModel(onnx_path)
+        self.backend = "CPU"
+
+    def embed(self, rgb):
+        """Merkmal fuer einen Personen-Ausschnitt (RGB, uint8) oder None (zu klein)."""
+        if rgb is None or rgb.shape[0] < 40 or rgb.shape[1] < 16:
+            return None
+        img = imaging.resize_bilinear(rgb, self.W, self.H).astype(np.float32) / 255.0
+        x = ((img - self.MEAN) / self.STD).transpose(2, 0, 1)[None].astype(np.float32)
+        with self.lock:
+            if self.cvnet is not None:
+                self.cvnet.setInput(x)
+                f = self.cvnet.forward().reshape(-1)
+            else:
+                f = self.net.run({self.net.input_names[0]: x})[0].reshape(-1)
+        n = float(np.linalg.norm(f))
+        return (f / n).astype(np.float32) if n > 0 else None
+
+    def close(self):
+        if self.net is not None and hasattr(self.net, "close"):
+            self.net.close()
+
+
 # ----------------------------------------------------------------------------
 # Kachel-Analyse: grosse Kamerabilder zusaetzlich in ueberlappenden Ausschnitten pruefen.
 # Das Modell sieht das Bild sonst verkleinert auf seine Eingangsgroesse (z. B. 640 px) -

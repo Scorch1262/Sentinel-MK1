@@ -12,7 +12,7 @@ import urllib.request
 import numpy as np
 
 from . import imaging, sysinfo, trt
-from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, FaceEngine, NanoDet, YoloX, detect_tiled
+from .detector import CLASS_GROUP, COCO, DE, GROUPS, SAME_TRACK, BodyReID, FaceEngine, NanoDet, YoloX, detect_tiled
 from .models import DETECTORS, ModelManager
 from .mqtt import MqttSender
 from .store import Store, blob_vec, vec_blob
@@ -43,9 +43,11 @@ def fmt_dur(minutes):
 class Track:
     __slots__ = ("tid", "cls", "key", "box", "score", "hits", "first_ts", "last_ts", "confirmed", "obj",
                  "last_save", "face_tries", "face_last", "has_face", "dets", "match", "named", "rejected",
-                 "retry_at", "scores", "why", "moved", "c0")
+                 "retry_at", "scores", "why", "moved", "c0", "body", "body_tries", "body_last", "body0", "switched")
 
     def __init__(self, tid, cls, box, score, ts):
+        self.body, self.body_tries, self.body_last = None, 9, 0.0
+        self.body0, self.switched = None, False
         self.tid, self.cls, self.key = tid, cls, track_key(cls)
         self.box, self.score = box, score
         self.hits, self.first_ts, self.last_ts = 1, ts, ts
@@ -67,31 +69,52 @@ class Track:
 
 
 class IdentityIndex:
-    """Lernbeispiele (positiv/negativ) aller Objekte im Speicher, fuer schnelle Zuordnung."""
+    """Lernbeispiele (positiv/negativ) aller Objekte im Speicher, fuer schnelle Zuordnung.
+
+    Arten: face (Gesicht, SFace), body (ganzer Koerper, YoutuReID - nur Personen), app (Farbhistogramm,
+    Rueckfall fuer Tiere/Fahrzeuge und Personen ohne Koerpermerkmal). Von Hand zugewiesene Beispiele
+    sind 'fest' (pinned): sie verfallen nicht und zaehlen ohne Zeitfenster."""
+
+    KINDS = ("app", "face", "body")
 
     def __init__(self, store):
         self.store = store
         self.lock = threading.RLock()
-        self.objs = {}      # oid -> dict(cls, last_seen, app=[], face=[], app_neg=[], face_neg=[])
+        self.objs = {}      # oid -> dict(cls, last_seen, <kind>=[vec], <kind>_neg=[vec], <kind>_meta=[(pinned, ts)])
         self.load()
+
+    @classmethod
+    def _empty(cls, ocls, last_seen):
+        o = dict(cls=ocls, last_seen=last_seen or 0)
+        for k in cls.KINDS:
+            o[k], o[k + "_neg"], o[k + "_meta"] = [], [], []
+        return o
+
+    def _put(self, o, kind, neg, v, pinned, ts):
+        if kind not in self.KINDS:
+            return
+        if neg:
+            o[kind + "_neg"].append(v)
+        else:
+            o[kind].append(v)
+            o[kind + "_meta"].append((bool(pinned), ts or 0))
 
     def load(self):
         with self.lock:
             self.objs = {}
             for o in self.store.q("SELECT id, cls, last_seen FROM objects"):
-                self.objs[o["id"]] = dict(cls=o["cls"], last_seen=o["last_seen"] or 0,
-                                          app=[], face=[], app_neg=[], face_neg=[])
-            for s in self.store.q("SELECT object_id, kind, neg, vec FROM samples ORDER BY id"):
+                self.objs[o["id"]] = self._empty(o["cls"], o["last_seen"])
+            for s in self.store.q("SELECT object_id, kind, neg, vec, pinned, ts FROM samples ORDER BY id"):
                 o = self.objs.get(s["object_id"])
                 v = blob_vec(s["vec"])
                 if o is None or v is None:
                     continue
-                o[s["kind"] + ("_neg" if s["neg"] else "")].append(v)
+                self._put(o, s["kind"], s["neg"], v, s["pinned"], s["ts"])
 
     def ensure(self, oid, cls, last_seen=0):
         with self.lock:
             if oid not in self.objs:
-                self.objs[oid] = dict(cls=cls, last_seen=last_seen, app=[], face=[], app_neg=[], face_neg=[])
+                self.objs[oid] = self._empty(cls, last_seen)
             return self.objs[oid]
 
     def drop(self, oid):
@@ -104,7 +127,27 @@ class IdentityIndex:
             return -1.0
         return float(np.max(np.stack(vecs) @ v))
 
-    def match(self, cls, app, face, now, cfg):
+    @staticmethod
+    def topk(vecs, v, k=3):
+        """Mittel der k aehnlichsten Beispiele - robuster als ein einzelner Bestwert."""
+        if not vecs or v is None:
+            return -1.0
+        sims = np.stack(vecs) @ v
+        k = min(k, len(sims))
+        s = float(np.sort(sims)[-k:].mean())
+        return s - (0.03 if k == 1 else 0.0)        # nur ein Beispiel: etwas vorsichtiger
+
+    def body_score(self, o, body, now, win):
+        """Koerper-Aehnlichkeit zu einem Objekt (feste Beispiele immer, gelernte im Zeitfenster)."""
+        vecs = [v for v, (pin, ts) in zip(o["body"], o["body_meta"]) if pin or now - ts <= win]
+        if not vecs:
+            return None
+        s = self.topk(vecs, body, 3)
+        if o["body_neg"] and self._best(o["body_neg"], body) >= s:
+            return None                                 # sieht einem Gegenbeispiel aehnlicher
+        return s
+
+    def match(self, cls, app, face, now, cfg, body=None, exclude=None):
         """Rueckgabe (oid, art, aehnlichkeit) oder (None, '', bester Wert)."""
         key = track_key(cls)
         face_thr = float(cfg.get("face_threshold", 0.40))
@@ -112,7 +155,7 @@ class IdentityIndex:
         win = float(cfg.get("appearance_window_h" if cls == "person" else "appearance_window_other_h", 12)) * 3600
         best = (None, "", -1.0)
         with self.lock:
-            items = [(oid, o) for oid, o in self.objs.items() if track_key(o["cls"]) == key]
+            items = [(oid, o) for oid, o in self.objs.items() if track_key(o["cls"]) == key and oid != exclude]
             if face is not None:
                 for oid, o in items:
                     s = self._best(o["face"], face)
@@ -125,6 +168,31 @@ class IdentityIndex:
                 if best[0] is not None:
                     return best
             best = (None, "", -1.0)
+            # Personen: Koerpermerkmal (ReID) mit Abstand zum Zweitbesten
+            if body is not None and key == track_key("person"):
+                thr = float(cfg.get("body_threshold", 0.60))
+                margin = float(cfg.get("body_margin", 0.05))
+                bwin = float(cfg.get("body_window_h", 72)) * 3600
+                scores = []
+                for oid, o in items:
+                    if face is not None and o["face"] and self._best(o["face"], face) < face_thr * 0.6:
+                        continue                        # Gesicht bekannt und eindeutig anders
+                    sc = self.body_score(o, body, now, bwin)
+                    if sc is not None:
+                        scores.append((sc, oid))
+                if scores:
+                    scores.sort(reverse=True)
+                    s1, oid = scores[0]
+                    s2 = scores[1][0] if len(scores) > 1 else -1.0
+                    if s1 >= thr and s1 - s2 >= margin:
+                        return (oid, "Körper", s1)
+                    best = (None, "", s1)
+            if key == track_key("person") and cfg.get("body", True) and cfg.get("_body_active"):
+                # Koerpermodell aktiv: Personen nie ueber das schwache Farbhistogramm zuordnen -
+                # das war die Hauptursache fuer Verwechslungen (Kleidungsfarben aehneln sich oft)
+                return best
+            if key == track_key("person"):
+                items = [(oid, o) for oid, o in items if not o["body"]]
             if app is None:
                 return best
             for oid, o in items:
@@ -132,7 +200,6 @@ class IdentityIndex:
                     continue
                 if now - (o["last_seen"] or 0) > win:
                     continue
-                # Gesicht bekannt und eindeutig anders -> nicht ueber Kleidung zuordnen
                 if face is not None and o["face"] and self._best(o["face"], face) < face_thr * 0.6:
                     continue
                 s = self._best(o["app"], app)
@@ -151,12 +218,14 @@ class IdentityIndex:
             lst = o[kind + ("_neg" if neg else "")]
             if not pinned and not neg and lst and self._best(lst, vec) > 0.985:
                 return  # fast identisch - kein neues Beispiel noetig
-            lst.append(np.asarray(vec, np.float32))
+            self._put(o, kind, neg, np.asarray(vec, np.float32), pinned, now)
             self.store.x("INSERT INTO samples(object_id, kind, neg, vec, det_id, pinned, ts) VALUES(?,?,?,?,?,?,?)",
                          (oid, kind, 1 if neg else 0, vec_blob(vec), det_id, 1 if pinned else 0, now))
-            if not neg and len(lst) > max_samples:
-                rows = self.store.q("SELECT id FROM samples WHERE object_id=? AND kind=? AND neg=0 AND pinned=0 "
-                                    "ORDER BY id LIMIT ?", (oid, kind, len(lst) - max_samples))
+            # automatisch gelernte Beispiele begrenzen; feste (von Hand) bis zu einer hohen Obergrenze
+            limit = max_samples if not pinned else max(max_samples, 400)
+            if not neg and len(lst) > limit:
+                rows = self.store.q("SELECT id FROM samples WHERE object_id=? AND kind=? AND neg=0 AND pinned=? "
+                                    "ORDER BY id LIMIT ?", (oid, kind, 1 if pinned else 0, len(lst) - limit))
                 if rows:
                     self.store.x("DELETE FROM samples WHERE id IN (%s)" % ",".join(str(r["id"]) for r in rows))
                     self.reload_obj(oid)
@@ -166,12 +235,12 @@ class IdentityIndex:
             o = self.objs.get(oid)
             if o is None:
                 return
-            for k in ("app", "face", "app_neg", "face_neg"):
-                o[k] = []
-            for s in self.store.q("SELECT kind, neg, vec FROM samples WHERE object_id=? ORDER BY id", (oid,)):
+            fresh = self._empty(o["cls"], o["last_seen"])
+            for s in self.store.q("SELECT kind, neg, vec, pinned, ts FROM samples WHERE object_id=? ORDER BY id", (oid,)):
                 v = blob_vec(s["vec"])
                 if v is not None:
-                    o[s["kind"] + ("_neg" if s["neg"] else "")].append(v)
+                    self._put(fresh, s["kind"], s["neg"], v, s["pinned"], s["ts"])
+            o.update({k: v for k, v in fresh.items() if k not in ("cls", "last_seen")})
 
     def touch(self, oid, ts):
         with self.lock:
@@ -253,6 +322,8 @@ class Engine:
         self.clean_lock = threading.Lock()
         self.build_pause = False
         self.det_ms = collections.deque(maxlen=30)
+        self.body_ms = collections.deque(maxlen=30)
+        self.body = None            # Personen-Wiedererkennung (Koerper)
         self.det_passes = collections.deque(maxlen=30)
         self.face_ms = collections.deque(maxlen=30)
         self.engine_error = ""
@@ -309,7 +380,10 @@ class Engine:
         return m
 
     def wanted_models(self):
-        return [DETECTORS[self.detector_choice()]["key"], "face_det", "face_rec"]
+        w = [DETECTORS[self.detector_choice()]["key"], "face_det", "face_rec"]
+        if self.cfg.get("identity").get("body", True):
+            w.append("body_reid")
+        return w
 
     def use_gpu(self):
         """GPU (TensorRT) verwenden? Einstellung detection.accel: auto | gpu | cpu"""
@@ -388,6 +462,24 @@ class Engine:
                     self.faces = faces
                     self.log("Gesichtserkennung bereit%s" % ("" if rec else " (ohne Wiedererkennung)")
                              + (" (Merkmale auf GPU)" if faces.gpu else ""))
+                if self.models.state.get("body_reid") == "ok" and self.cfg.get("identity").get("body", True):
+                    beng = self.models.engine_path("body_reid") if gpu and self.models.engine_ok("body_reid") else None
+                    t0 = time.time()
+                    try:
+                        body = BodyReID(self.models.path("body_reid"), engine=beng)
+                    except Exception as e:
+                        if not beng:
+                            raise
+                        self.log("TensorRT-Körpermerkmale nicht ladbar (%s) - nutze CPU" % e)
+                        body = BodyReID(self.models.path("body_reid"))
+                    self.body = body
+                    self.log("Personen-Wiedererkennung (Körper) bereit: %s, %.1f s" % (body.backend, time.time() - t0))
+                    if not getattr(self, "_backfill_started", False):
+                        self._backfill_started = True
+                        threading.Thread(target=self._body_backfill, daemon=True).start()
+                elif self.cfg.get("identity").get("body", True) and self.models.state.get("body_reid") != "ok" \
+                        and not self.models.busy:
+                    self.models.ensure(on_done=self.load_models)
                 self.engine_error = "" if self.det else "Modelle fehlen"
             except Exception as e:
                 self.engine_error = "Modelle konnten nicht geladen werden: %s" % e
@@ -416,8 +508,14 @@ class Engine:
                             n.close()
                         except Exception:
                             pass
+            if self.body is not None:
+                try:
+                    self.body.close()
+                except Exception:
+                    pass
             self.det = None
             self.faces = None
+            self.body = None
         import gc
         gc.collect()
         time.sleep(3)    # ffmpeg/GStreamer-Prozesse beenden lassen
@@ -723,6 +821,7 @@ class Engine:
     def _update_tracks(self, w, tracks, dets, frame, idx, now, d):
         timeout = max(float(d.get("track_timeout_s", 6.0)), 3 * float(d.get("interval_s", 1.0)))
         pairs = []
+        tracks[:] = [t for t in tracks if not t.switched]      # vertauschte Spuren beenden
         for ti, t in enumerate(tracks):
             for di, x in enumerate(dets):
                 cls = COCO[x[5]]
@@ -794,6 +893,25 @@ class Engine:
         if crop is None:
             return None, None, None
         app = imaging.appearance(crop)
+        body = None
+        if t.cls == "person" and self.body is not None and icfg.get("body", True) and not self._occluded(t) \
+                and crop.shape[0] >= float(icfg.get("body_min_px", 80)):
+            # zu kleine Personen (weit weg) liefern unzuverlaessige Koerpermerkmale -> lieber neu anlegen
+            t0 = time.time()
+            try:
+                body = self.body.embed(crop)
+            except Exception as e:
+                if time.time() - getattr(self, "_body_err", 0) > 600:
+                    self._body_err = time.time()
+                    self.log("Körpermerkmal: %s" % e)
+            self.body_ms.append((time.time() - t0) * 1000)
+        if body is not None:
+            t.body = body
+            if t.body0 is None:
+                t.body0 = body
+            elif float(body @ t.body0) < float(icfg.get("body_switch", 0.35)):
+                # Spur ist auf eine andere Person gesprungen (Personen haben sich gekreuzt)
+                t.switched = True
         face = None
         lm_abs = None
         if want_face and t.cls == "person" and icfg.get("faces", True) and self.faces is not None:
@@ -807,17 +925,52 @@ class Engine:
                     face = self.faces.embed(head, f[2])
                     lm_abs = f[2] + np.array([ox, oy], np.float32)
             self.face_ms.append((time.time() - t0) * 1000)
-        return app, face, lm_abs
+        return app, face, lm_abs, body
+
+    def _occluded(self, t, limit=0.2):
+        """Ueberlappt eine andere Person diesen Ausschnitt deutlich? Dann vermischt das Koerpermerkmal
+        zwei Menschen - fuer Zuordnung und Lernen ungeeignet."""
+        x1, y1, x2, y2 = t.box
+        area = max(1.0, (x2 - x1) * (y2 - y1))
+        for tl in self.tracks.values():
+            if t not in tl:
+                continue
+            for o in tl:
+                if o is t or o.cls != "person" or o.last_ts < t.last_ts - 0.01:
+                    continue
+                ix = max(0.0, min(x2, o.box[2]) - max(x1, o.box[0]))
+                iy = max(0.0, min(y2, o.box[3]) - max(y1, o.box[1]))
+                if ix * iy / area > limit:
+                    return True
+            break
+        return False
+
+    def _learn_body(self, oid, cls, body, det_id, now, strong=True):
+        """Automatisch gelerntes Koerperbeispiel nur, wenn es zu den vorhandenen passt - sonst wuerde
+        eine vertauschte Spur (Personen kreuzen sich) oder eine falsche Zuordnung das Objekt
+        'verwaessern' und spaeter Fremde anziehen."""
+        if body is None or not oid or not strong:
+            return False
+        icfg = self.cfg.get("identity")
+        o = self.index.objs.get(oid)
+        if o and o["body"]:
+            if self.index.topk(o["body"], body, 3) < float(icfg.get("body_learn_min", 0.6)):
+                return False
+        self.index.add(oid, cls, "body", body, det_id, now, int(icfg.get("max_samples", 40)))
+        return True
 
     # ------------------------------------------------------------------
     # Sichtungen
     # ------------------------------------------------------------------
     def _new_sighting(self, w, t, frame, idx, now):
         icfg = self.cfg.get("identity")
-        app, face, _ = self._features(frame, t)
+        app, face, _, body = self._features(frame, t)
         t.face_tries = 1
         t.face_last = now
-        oid, how, sim = self.index.match(t.cls, app, face, now, icfg)
+        t.body_tries = 0
+        t.body_last = now
+        icfg = dict(icfg, _body_active=self.body is not None)
+        oid, how, sim = self.index.match(t.cls, app, face, now, icfg, body=body)
         if oid is not None and not self.store.q("SELECT id FROM objects WHERE id=?", (oid,), one=True):
             self.index.drop(oid)
             oid = None
@@ -844,26 +997,72 @@ class Engine:
             self.seen[(w.id, oid)] = now
             if now - t.last_save < float(d.get("resnap_s", 120) or 1e9):
                 return
-            det_id = self._save_detection(w, t, frame, idx, now, app, face, sighting=0, match=how, sim=sim)
+            det_id = self._save_detection(w, t, frame, idx, now, app, face, sighting=0, match=how, sim=sim, body=body)
             self._after_detection(oid, det_id, now, sighting=False, has_face=face is not None)
             return
         self.seen[(w.id, oid)] = now
-        det_id = self._save_detection(w, t, frame, idx, now, app, face, sighting=1, match=how, sim=sim)
+        det_id = self._save_detection(w, t, frame, idx, now, app, face, sighting=1, match=how, sim=sim, body=body)
         ms = int(icfg.get("max_samples", 40))
         self.index.add(oid, t.cls, "app", app, det_id, now, ms)
         if face is not None:
             self.index.add(oid, t.cls, "face", face, det_id, now, ms)
+        # nur bei sicherer Zuordnung (bzw. neuer Person) lernen
+        self._learn_body(oid, t.cls, body, det_id, now,
+                         strong=how in ("neu", "Gesicht") or (how == "Körper" and sim >= float(icfg.get("body_threshold", 0.60)) + 0.1))
         self._after_detection(oid, det_id, now, sighting=True, has_face=face is not None)
         self._object_event(w, t, det_id, now)
 
     def _follow_up(self, w, t, frame, idx, now, d):
         icfg = self.cfg.get("identity")
+        if t.switched:
+            # vertauschte Spur beenden - die Person wird im naechsten Bild als neue Spur sauber erfasst
+            t.last_ts = 0
+            return
+        # Neu angelegte Person: das erste Bild ist oft ungeeignet (halb im Bild, verdeckt). Mit
+        # weiteren Bildern derselben Spur nachpruefen, ob es doch eine bekannte Person ist.
+        if t.cls == "person" and self.body is not None and t.match == "neu" and t.body_tries < 6 \
+                and now - t.body_last >= 1.5 and icfg.get("body", True):
+            t.body_tries += 1
+            t.body_last = now
+            app, face, _, body = self._features(frame, t, want_face=False)
+            if body is not None:
+                oid, how, sim = self.index.match(t.cls, None, None, now, dict(icfg, _body_active=True),
+                                                 body=body, exclude=t.obj)
+                if t.switched:
+                    t.last_ts = 0
+                    return
+                if oid is not None and oid != t.obj and t.dets:
+                    # Passen auch die schon gespeicherten Bilder dieser Spur zur erkannten Person?
+                    # (sonst zeigt das Bild jemand anderen - z. B. Spur hat die Person gewechselt)
+                    tgt = self.index.objs.get(oid)
+                    for r in self.store.q("SELECT bvec FROM detections WHERE id IN (%s) AND bvec IS NOT NULL"
+                                          % ",".join(str(i) for i in t.dets)):
+                        v = blob_vec(r["bvec"])
+                        if tgt and tgt["body"] and v is not None and self.index.topk(tgt["body"], v, 3) < \
+                                float(icfg.get("body_threshold", 0.60)) - 0.15:
+                            oid = None
+                            break
+                if oid is not None and oid != t.obj:
+                    self.log("Sichtung %s: am Körper erkannt -> Objekt %s (vorher neu angelegt %s)" % (t.tid, oid, t.obj))
+                    old = t.obj
+                    self._reassign_track(t, oid, move_samples=False)
+                    t.match = "Körper"
+                    self._cleanup_object(old)
+                    self._learn_body(oid, t.cls, body, t.dets[-1] if t.dets else None, now,
+                                     strong=sim >= float(icfg.get("body_threshold", 0.60)) + 0.1)
+                    if t.dets:
+                        self.store.x("UPDATE detections SET match=?, sim=? WHERE id IN (%s)"
+                                     % ",".join(str(i) for i in t.dets), ("Körper", float(sim)))
+                    return
+                elif oid is None and t.obj:
+                    # gleiche (neue) Person: weiteres Beispiel lernen -> spaeter besser wiedererkennbar
+                    self._learn_body(t.obj, t.cls, body, t.dets[-1] if t.dets else None, now)
         # Personen ohne Gesicht: weiter nach einem Gesicht suchen (max. 8 Versuche)
         if t.cls == "person" and not t.has_face and t.face_tries < 8 and now - t.face_last >= 1.5 \
                 and self.faces is not None and icfg.get("faces", True):
             t.face_tries += 1
             t.face_last = now
-            app, face, _ = self._features(frame, t)
+            app, face, _, body = self._features(frame, t)
             if face is not None:
                 t.has_face = True
                 oid, how, sim = self.index.match(t.cls, None, face, now, icfg)
@@ -875,15 +1074,16 @@ class Engine:
                     t.match = "Gesicht"
                     self._cleanup_object(old)
                 det_id = self._save_detection(w, t, frame, idx, now, app, face, sighting=0, match="Gesicht",
-                                              sim=sim if oid == t.obj else 0)
+                                              sim=sim if oid == t.obj else 0, body=body)
                 ms = int(icfg.get("max_samples", 40))
                 self.index.add(t.obj, t.cls, "face", face, det_id, now, ms)
                 self.index.add(t.obj, t.cls, "app", app, det_id, now, ms)
                 self._after_detection(t.obj, det_id, now, sighting=False, has_face=True)
                 return
         if now - t.last_save >= float(d.get("resnap_s", 120)) > 0:
-            app, face, _ = self._features(frame, t, want_face=False)
-            det_id = self._save_detection(w, t, frame, idx, now, app, None, sighting=0, match=t.match, sim=0)
+            app, face, _, body = self._features(frame, t, want_face=False)
+            det_id = self._save_detection(w, t, frame, idx, now, app, None, sighting=0, match=t.match, sim=0, body=body)
+            self._learn_body(t.obj, t.cls, body, det_id, now)
             self._after_detection(t.obj, det_id, now, sighting=False, has_face=False)
 
     def _create_object(self, cls, now):
@@ -893,7 +1093,7 @@ class Engine:
         self.index.ensure(oid, cls, now)
         return oid
 
-    def _save_detection(self, w, t, frame, idx, now, app, face, sighting, match, sim):
+    def _save_detection(self, w, t, frame, idx, now, app, face, sighting, match, sim, body=None):
         H, W = frame.shape[:2]
         day = time.strftime("%Y-%m-%d", time.localtime(now))
         folder = os.path.join(self.snap_dir, day)
@@ -915,10 +1115,10 @@ class Engine:
         x1, y1, x2, y2 = t.box
         det_id = self.store.x(
             "INSERT INTO detections(ts, stream_id, stream_name, cls, score, x1, y1, x2, y2, object_id, track, "
-            "sighting, face, match, sim, img, crop, app, fvec) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "sighting, face, match, sim, img, crop, app, fvec, bvec) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (now, w.id, w.cfg.get("name", w.id), t.cls, t.score, x1 / W, y1 / H, x2 / W, y2 / H, t.obj, t.tid,
              sighting, 1 if face is not None else 0, match, float(sim), img_rel, crop_rel, vec_blob(app),
-             vec_blob(face)))
+             vec_blob(face), vec_blob(body)))
         t.dets.append(det_id)
         t.last_save = now
         return det_id
@@ -950,14 +1150,163 @@ class Engine:
                 shutil.copyfile(src, os.path.join(self.avatar_dir, "%d.png" % oid))
                 self.store.x("UPDATE objects SET avatar_det=? WHERE id=?", (det_id, oid))
 
-    def _reassign_track(self, t, new_oid):
+    # ------------------------------------------------------------------
+    # Koerpermerkmale: nachberechnen, Vorschlaege, Ablehnungen
+    # ------------------------------------------------------------------
+    def _read_rgb(self, rel):
+        p = self.snap_path(rel) if rel else None
+        if not p or not os.path.exists(p):
+            return None
+        try:
+            import cv2
+            img = cv2.imread(p, cv2.IMREAD_COLOR)
+            return None if img is None else img[:, :, ::-1].copy()
+        except Exception:
+            return None
+
+    def _body_for_row(self, r, save=True):
+        """Koerpermerkmal einer gespeicherten Erkennung aus ihrem Bild berechnen (und merken)."""
+        if self.body is None or r.get("cls") != "person":
+            return None
+        crop = None
+        if r.get("img") and r.get("match") != "import" and r.get("x2"):
+            full = self._read_rgb(r["img"])
+            if full is not None:
+                H, W = full.shape[:2]
+                crop, _ = imaging.crop(full, (r["x1"] * W, r["y1"] * H, r["x2"] * W, r["y2"] * H))
+        if crop is None and r.get("crop"):
+            crop = self._read_rgb(r["crop"])
+        if crop is None:
+            return None
+        try:
+            b = self.body
+            v = b.embed(crop) if b is not None else None
+        except Exception:
+            return None
+        if v is not None and save:
+            self.store.x("UPDATE detections SET bvec=? WHERE id=?", (vec_blob(v), r["id"]))
+        return v
+
+    def _body_backfill(self):
+        """Einmalig im Hintergrund: Koerpermerkmale fuer vorhandene Personenbilder berechnen und daraus
+        Lernbeispiele bilden - damit bisherige Zuweisungen sofort zur Wiedererkennung beitragen."""
+        try:
+            time.sleep(20)
+            todo = self.store.q("SELECT COUNT(*) n FROM detections WHERE cls='person' AND bvec IS NULL", one=True)["n"]
+            done = 0
+            if todo:
+                self.log("Körpermerkmale: berechne %d vorhandene Personenbilder nach (Hintergrund) ..." % todo)
+            while not self.stop_ev.is_set():
+                if self.build_pause or self.body is None:
+                    time.sleep(5)
+                    continue
+                rows = self.store.q("SELECT id, cls, img, crop, x1, y1, x2, y2, match FROM detections "
+                                    "WHERE cls='person' AND bvec IS NULL AND id NOT IN (%s) "
+                                    "ORDER BY (object_id IS NULL), manual DESC, ts DESC LIMIT 40"
+                                    % (",".join(str(i) for i in getattr(self, "_bf_skip", set())) or "0"))
+                if not rows:
+                    break
+                for r in rows:
+                    if self._body_for_row(r) is None:
+                        self.__dict__.setdefault("_bf_skip", set()).add(r["id"])   # Bild fehlt
+                    else:
+                        done += 1
+                    time.sleep(0.02)
+            self._body_samples_from_history()
+            if todo:
+                self.log("Körpermerkmale: %d Bilder nachberechnet, Lernbeispiele aus bisherigen Zuweisungen gebildet" % done)
+        except Exception as e:
+            self.log("Körpermerkmale nachberechnen: %s" % e)
+            traceback.print_exc()
+
+    def _body_samples_from_history(self):
+        """Fuer Personen ohne Koerperbeispiele: aus ihren (zugewiesenen) Bildern Beispiele bilden;
+        Gegenbeispiele aus frueheren Korrekturen uebernehmen."""
+        ms = int(self.cfg.get("identity").get("max_samples", 40))
+        have = set(r["object_id"] for r in self.store.q("SELECT DISTINCT object_id FROM samples WHERE kind='body' AND neg=0"))
+        for o in self.store.q("SELECT id, cls FROM objects WHERE cls='person'"):
+            if o["id"] in have:
+                continue
+            rows = self.store.q("SELECT id, ts, manual, bvec FROM detections WHERE object_id=? AND bvec IS NOT NULL "
+                                "ORDER BY manual DESC, ts DESC LIMIT 200", (o["id"],))
+            auto = 0
+            for r in rows:
+                v = blob_vec(r["bvec"])
+                if r["manual"]:
+                    self.index.add(o["id"], o["cls"], "body", v, r["id"], r["ts"], ms, pinned=True)
+                elif auto < ms:
+                    self.index.add(o["id"], o["cls"], "body", v, r["id"], r["ts"], ms)
+                    auto += 1
+        # Gegenbeispiele: wo frueher ein Aussehen-Gegenbeispiel gelernt wurde, auch den Koerper
+        for s in self.store.q("SELECT DISTINCT s.object_id, s.det_id, d.bvec, d.ts FROM samples s JOIN detections d "
+                              "ON d.id=s.det_id WHERE s.neg=1 AND s.kind='app' AND d.cls='person' AND d.bvec IS NOT NULL "
+                              "AND NOT EXISTS (SELECT 1 FROM samples b WHERE b.object_id=s.object_id AND b.det_id=s.det_id "
+                              "AND b.kind='body' AND b.neg=1)"):
+            self.index.add(s["object_id"], "person", "body", blob_vec(s["bvec"]), s["det_id"], s["ts"], ms,
+                           pinned=True, neg=True)
+
+    def suggest(self, oid, limit=60, days=30):
+        """Personenbilder anderer/unbenannter Objekte, die dieser Person aehneln (Koerpermerkmal)."""
+        o = self.index.objs.get(int(oid))
+        if not o or not o["body"]:
+            return [], (0 if not o else len(o["body"]))
+        thr = float(self.cfg.get("identity").get("suggest_threshold", 0.45))
+        rows = self.store.q(
+            "SELECT d.* FROM detections d LEFT JOIN objects b ON b.id=d.object_id WHERE d.cls='person' "
+            "AND d.bvec IS NOT NULL AND (d.object_id IS NULL OR (d.object_id<>? AND IFNULL(b.name,'')='' AND d.manual=0)) "
+            "AND d.ts>? AND d.id NOT IN (SELECT det_id FROM samples WHERE object_id=? AND kind='body' AND neg=1 "
+            "AND det_id IS NOT NULL) ORDER BY d.ts DESC LIMIT 3000",
+            (int(oid), time.time() - days * 86400, int(oid)))
+        if not rows:
+            return [], len(o["body"])
+        V = np.stack([blob_vec(r["bvec"]) for r in rows])
+        P = np.stack(o["body"])
+        sims = V @ P.T
+        k = min(3, P.shape[0])
+        score = np.sort(sims, axis=1)[:, -k:].mean(axis=1)
+        if o["body_neg"]:
+            negb = (V @ np.stack(o["body_neg"]).T).max(axis=1)
+            score = np.where(negb >= score, -1.0, score)
+        order = np.argsort(-score)
+        out = []
+        for i in order[:limit]:
+            if score[i] < thr:
+                break
+            r = rows[int(i)]
+            r["score"] = float(score[i])
+            out.append(r)
+        return out, len(o["body"])
+
+    def reject_suggestions(self, oid, det_ids):
+        """'Ist nicht diese Person' -> Gegenbeispiele, damit diese Bilder nicht mehr vorgeschlagen werden
+        und aehnlich aussehende Fremde nicht zugeordnet werden."""
+        ms = int(self.cfg.get("identity").get("max_samples", 40))
+        o = self.store.q("SELECT cls FROM objects WHERE id=?", (int(oid),), one=True)
+        if not o:
+            return 0
+        n = 0
+        now = time.time()
+        for r in self.store.q("SELECT id, bvec FROM detections WHERE id IN (%s)"
+                              % ",".join(str(int(i)) for i in det_ids or [0])):
+            v = blob_vec(r["bvec"])
+            if v is not None:
+                self.index.add(int(oid), o["cls"], "body", v, r["id"], now, ms, pinned=True, neg=True)
+                n += 1
+        return n
+
+    def _reassign_track(self, t, new_oid, move_samples=True):
         old = t.obj
         if t.dets:
             ids = ",".join(str(i) for i in t.dets)
             rows = self.store.q("SELECT id, sighting FROM detections WHERE id IN (%s)" % ids)
             self.store.x("UPDATE detections SET object_id=? WHERE id IN (%s)" % ids, (new_oid,))
-            self.store.x("UPDATE samples SET object_id=? WHERE det_id IN (%s) AND object_id=? AND neg=0" % ids,
-                         (new_oid, old))
+            if move_samples:
+                self.store.x("UPDATE samples SET object_id=? WHERE det_id IN (%s) AND object_id=? AND neg=0" % ids,
+                             (new_oid, old))
+            else:
+                # Beispiele nicht blind uebernehmen (koennten eine vertauschte Spur enthalten) -
+                # das Ziel lernt nur ueber die Pruefung in _learn_body
+                self.store.x("DELETE FROM samples WHERE det_id IN (%s) AND object_id=?" % ids, (old,))
             n_s = sum(r["sighting"] for r in rows)
             self.store.xmany([
                 ("UPDATE objects SET sightings=MAX(0, sightings-?), detections=MAX(0, detections-?) WHERE id=?",
@@ -1573,12 +1922,15 @@ class Engine:
                 continue
             olds.add(old)
             app, face = blob_vec(r["app"]), blob_vec(r["fvec"])
+            body = blob_vec(r.get("bvec")) if r.get("bvec") is not None else self._body_for_row(r)
             self.store.x("DELETE FROM samples WHERE det_id=? AND neg=0", (r["id"],))
             if old:
                 self.index.add(old, r["cls"], "app", app, r["id"], now, ms, pinned=True, neg=True)
                 self.index.add(old, r["cls"], "face", face, r["id"], now, ms, pinned=True, neg=True)
+                self.index.add(old, r["cls"], "body", body, r["id"], now, ms, pinned=True, neg=True)
             self.index.add(target, tgt["cls"], "app", app, r["id"], now, ms, pinned=True)
             self.index.add(target, tgt["cls"], "face", face, r["id"], now, ms, pinned=True)
+            self.index.add(target, tgt["cls"], "body", body, r["id"], now, ms, pinned=True)
             self.store.x("UPDATE detections SET object_id=?, manual=1 WHERE id=?", (target, r["id"]))
             # laufende Spuren mitnehmen
             for tl in self.tracks.values():

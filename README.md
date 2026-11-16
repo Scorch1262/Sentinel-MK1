@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.7.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.8.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -335,14 +335,27 @@ Fehlerkennungen und den Alarmverlauf. Zur Sicherheit muss „LÖSCHEN“ eingeti
 1. Ein Objekt zählt als **Sichtung**, sobald es mehrmals hintereinander erkannt wurde
    (Standard 2×). Eine durchgehende Anwesenheit zählt einmal; erst nach 60 s Abwesenheit im selben
    Stream zählt eine neue Sichtung.
-2. Für jede Sichtung werden Merkmale gebildet: bei Personen Gesicht (falls ≥ 28 px sichtbar) und
-   Aussehen (Farbverteilung in drei Bereichen), bei allen anderen das Aussehen.
-3. Vergleich mit allen bekannten Objekten derselben Art – **egal aus welchem Stream**. Passt keins,
-   wird ein neues Objekt angelegt („Person 17“, „Auto 3“ …).
-4. Korrekturen und Zusammenführungen werden als feste Beispiele bzw. Gegenbeispiele gespeichert.
+2. Für jede Sichtung werden Merkmale gebildet: bei Personen **Gesicht** (SFace, falls ≥ 28 px
+   sichtbar) und **Körper** (YoutuReID – Statur, Haltung, Kleidung; 768 Werte, funktioniert auch von
+   hinten und aus anderen Kameras), bei allen anderen das Aussehen (Farbverteilung).
+3. Vergleich mit allen bekannten Objekten derselben Art – **egal aus welchem Stream**. Bei Personen
+   zählt das Mittel der 3 ähnlichsten Beispiele, und die beste Person muss sich deutlich (Abstand
+   0,05) von der zweitbesten abheben – sonst wird lieber eine neue Person angelegt als falsch
+   zugeordnet. Ist das erste Bild ungeeignet (halb im Bild), prüft Sentinel mit den nächsten Bildern
+   derselben Spur nach und bucht die Sichtung ggf. auf die bekannte Person um.
+4. **Lernen:** Von Hand zugewiesene Bilder werden *feste* Beispiele (gelten unbegrenzt, bis zu 400
+   je Person), automatisch gelernte nur, wenn sie zu den vorhandenen passen – so „verwässert“ eine
+   Person nicht durch Verwechslungen. Verdeckte Personen (überlappen sich) und zu kleine
+   (unter 80 px) werden nicht zum Lernen verwendet; springt eine Spur auf eine andere Person,
+   wird sie beendet.
+5. **Vorschläge:** Beim Öffnen einer Person zeigt Sentinel unter *„Sieht aus wie …“* ähnliche Bilder
+   der letzten 30 Tage mit Prozentwert. Richtige bestätigen (festes Beispiel), Rest als „jemand
+   anderes“ markieren (Gegenbeispiel) – so wird die Person mit jeder Runde sicherer erkannt.
+6. Nach dem Update berechnet Sentinel die Körpermerkmale aller vorhandenen Personenbilder einmalig
+   im Hintergrund nach; bisherige Zuweisungen werden dabei sofort zu Lernbeispielen.
 
-Schwellen (Gesicht 0,40 · Aussehen 0,90 · Zeitfenster) sind unter **Einstellungen → Wiedererkennung**
-anpassbar. Fahrzeuge und Tiere werden nur über ihr Aussehen (Farbe) unterschieden – gleichfarbige
+Schwellen (Gesicht 0,40 · Körper 0,60 · Aussehen 0,90 · Zeitfenster) sind unter
+**Einstellungen → Wiedererkennung** anpassbar. Fahrzeuge und Tiere werden nur über ihr Aussehen (Farbe) unterschieden – gleichfarbige
 Autos lassen sich dadurch nicht sicher auseinanderhalten; Kennzeichenerkennung gibt es nicht.
 
 ## MQTT

@@ -43,6 +43,14 @@ DEFAULTS = {
         "appearance_window_h": 12,  # Personen ohne Gesicht nur innerhalb dieser Zeit ueber Kleidung zuordnen
         "appearance_window_other_h": 72,
         "max_samples": 40,
+        # Personen-Wiedererkennung am ganzen Koerper (YoutuReID) - auch ohne sichtbares Gesicht
+        "body": True,
+        "body_threshold": 0.60,     # Mittel der 3 aehnlichsten Beispiele (Kosinus)
+        "body_margin": 0.05,        # Abstand zur naechstaehnlichen Person (sonst nicht zuordnen)
+        "body_window_h": 72,        # automatisch gelernte Beispiele; von Hand zugewiesene gelten immer
+        "suggest_threshold": 0.45,  # Vorschlaege "sieht aus wie ..."
+        "body_learn_min": 0.6,
+        "body_min_px": 80,          # Personen kleiner als so viele Pixel (Hoehe) nicht am Koerper vergleichen      # automatisch nur Beispiele lernen, die zu den vorhandenen passen
     },
     # target: Speicherort fuer Bilder/Videos (local | path | disk | nas), siehe storage.py
     "storage": {"max_days": 30, "max_mb": 8000, "target": {"type": "local"}, "old_roots": [],

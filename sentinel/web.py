@@ -121,6 +121,16 @@ class Api:
             return d
         if path == "/api/objects":
             return self.objects(qs)
+        m = re.match(r"^/api/objects/(\d+)/suggest$", path)
+        if m:
+            rows, n = e.suggest(int(m.group(1)))
+            labels = obj_labels(e, [r["object_id"] for r in rows])
+            items = []
+            for r in rows:
+                j = det_json(e, r, labels)
+                j["score"] = round(r["score"], 3)
+                items.append(j)
+            return dict(items=items, samples=n, ready=e.body is not None)
         m = re.match(r"^/api/object/(\d+)$", path)
         if m:
             oid = int(m.group(1))
@@ -472,6 +482,9 @@ class Api:
             if e.store.q("SELECT id FROM objects WHERE id=?", (int(m.group(1)),), one=True):
                 e.delete_object(int(m.group(1)), delete_detections=True)
             return dict(ok=True, learned=n)
+        m = re.match(r"^/api/objects/(\d+)/reject$", path)
+        if m:
+            return dict(ok=True, learned=e.reject_suggestions(int(m.group(1)), body.get("ids") or []))
         m = re.match(r"^/api/objects/(\d+)/merge$", path)
         if m:
             e.merge_objects(int(m.group(1)), int(body["into"]))

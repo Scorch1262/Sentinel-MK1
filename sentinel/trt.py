@@ -132,9 +132,19 @@ class TrtModel:
         self.bind = []
         self.input_names, self.output_names = [], []
         self.host, self.dev, self.ptrs = {}, {}, []
+        # Engines mit variabler Eingangsform (Optimierungsprofil): Form fest auf das Profil setzen
+        for i in range(self.engine.num_bindings):
+            if self.engine.binding_is_input(i) and any(int(d) < 0 for d in self.engine.get_binding_shape(i)):
+                try:
+                    opt = self.engine.get_profile_shape(0, i)[1]
+                    self.ctx.set_binding_shape(i, tuple(int(d) for d in opt))
+                except Exception:
+                    pass
         for i in range(self.engine.num_bindings):
             name = self.engine.get_binding_name(i)
-            shape = tuple(int(d) for d in self.engine.get_binding_shape(i))
+            shape = tuple(int(d) for d in self.ctx.get_binding_shape(i))
+            if any(d < 0 for d in shape):
+                shape = tuple(max(1, d) for d in shape)
             dtype = np.dtype(trt.nptype(self.engine.get_binding_dtype(i)))
             is_in = self.engine.binding_is_input(i)
             self.host[name] = np.empty(shape, dtype=dtype)
@@ -164,7 +174,7 @@ class TrtModel:
         self.dev = {}
 
 
-def build_engine(onnx_path, engine_path, log, workspace_mb=256, fp16=True, timeout=3600):
+def build_engine(onnx_path, engine_path, log, workspace_mb=256, fp16=True, timeout=3600, shapes=None):
     """ONNX -> TensorRT-Engine mit trtexec (dauert auf dem Jetson Nano einige Minuten)."""
     exe = trtexec_path()
     if not exe:
@@ -178,6 +188,8 @@ def build_engine(onnx_path, engine_path, log, workspace_mb=256, fp16=True, timeo
         pass
     for attempt, ws in enumerate((workspace_mb, 64)):
         cmd = [exe, "--onnx=%s" % onnx_path, "--saveEngine=%s" % tmp, "--workspace=%d" % ws]
+        if shapes:
+            cmd += ["--minShapes=" + shapes, "--optShapes=" + shapes, "--maxShapes=" + shapes]
         if fp16:
             cmd.append("--fp16")
         if major >= 8:

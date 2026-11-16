@@ -66,6 +66,11 @@ class Store:
         except sqlite3.DatabaseError:
             pass
         self.db.executescript(SCHEMA)
+        # v2.8.0: Koerpermerkmal (Personen-Wiedererkennung) je Erkennung
+        cols = [r[1] for r in self.db.execute("PRAGMA table_info(detections)").fetchall()]
+        if "bvec" not in cols:
+            self.db.execute("ALTER TABLE detections ADD COLUMN bvec BLOB")
+        self.db.execute("CREATE INDEX IF NOT EXISTS smp_obj ON samples(object_id, kind)")
         self.db.commit()
 
     def q(self, sql, args=(), one=False):
