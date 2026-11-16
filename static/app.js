@@ -1151,7 +1151,7 @@ function sysmonPanel() {
   const info = el('div', {class: 'kv'}, el('span', {class: 'muted'}, 'Zustand wird geprüft …'));
   const logBox = el('pre', {class: 'mono small sm-log', hidden: true});
   const openBtn = el('a', {class: 'btn', target: '_blank', rel: 'noopener', hidden: true}, 'Öffnen ↗');
-  const instBtn = el('button', {class: 'btn btn-ghost'}, 'Installieren');
+  const instBtn = el('button', {class: 'btn btn-ghost'}, 'Von GitHub installieren');
   const rstBtn = el('button', {class: 'btn btn-ghost', hidden: true}, 'Neu starten');
   const mqBtn = el('button', {class: 'btn btn-ghost', hidden: true, title: 'Broker, Port, Benutzer und Passwort aus Einstellungen → MQTT übernehmen'}, 'MQTT von Sentinel übernehmen');
   let timer = null;
@@ -1161,11 +1161,14 @@ function sysmonPanel() {
     const url = location.protocol + '//' + location.hostname + ':' + st.port + '/';
     info.innerHTML = '';
     const row = (k, v) => info.append(el('span', null, k), el('span', null, v));
+    const newer = st.remote && st.version && st.remote !== st.version;
     if (!st.installed) {
       row('Zustand', 'nicht installiert');
+      row('Auf GitHub', st.remote ? 'v' + st.remote : 'wird abgefragt …');
     } else {
       row('Zustand', el('span', {class: st.web ? 'ok-txt' : 'err-line'}, st.web ? '● läuft' : st.running ? '● Dienst läuft, Webseite antwortet nicht' : '● gestoppt (' + st.service + ')'));
-      row('Version', (st.version ? 'v' + st.version : '?') + (st.too_old ? ' – für den Jetson ist v1.4.0 oder neuer nötig: „Aktualisieren“' : ''));
+      row('Version', (st.version ? 'v' + st.version : '?') + (st.py36 ? ' · mit Python-3.6-Anpassung' : ''));
+      row('Auf GitHub', newer ? el('span', {class: 'ok-txt'}, 'v' + st.remote + ' verfügbar') : st.remote ? 'v' + st.remote + ' (aktuell)' : 'wird abgefragt …');
       row('Webseite', el('a', {href: url, target: '_blank', rel: 'noopener', class: 'mono'}, url));
       row('MQTT', st.mqtt_host ? (st.mqtt_state || (st.mqtt_connected ? 'verbunden' : 'nicht verbunden')) + ' · ' + st.mqtt_host +
         (st.mqtt_error && !st.mqtt_connected ? ' · ' + st.mqtt_error : '') : 'noch kein Broker eingetragen');
@@ -1174,7 +1177,7 @@ function sysmonPanel() {
     openBtn.href = url;
     openBtn.hidden = !st.installed;
     openBtn.classList.toggle('disabled', !st.web);
-    instBtn.textContent = st.installed ? 'Aktualisieren' : 'Installieren';
+    instBtn.textContent = st.installed ? 'Von GitHub aktualisieren' : 'Von GitHub installieren';
     rstBtn.hidden = mqBtn.hidden = !st.installed;
     const j = st.job;
     if (j) {
@@ -1186,10 +1189,10 @@ function sysmonPanel() {
     instBtn.disabled = !!busy;
     if (busy) instBtn.textContent = 'Installiert …';
     clearTimeout(timer);
-    if (busy && document.body.contains(info)) timer = setTimeout(refresh, 1500);
+    if ((busy || (st.remote == null)) && document.body.contains(info)) timer = setTimeout(refresh, busy ? 1500 : 4000);
   };
   instBtn.onclick = async () => {
-    if (!confirm('System-Monitor aus GitHub (Scorch1262/System-Monitor-MQTT-MK1) installieren bzw. aktualisieren?')) return;
+    if (!confirm('System-Monitor direkt von GitHub (Scorch1262/System-Monitor-MQTT-MK1) laden und installieren bzw. aktualisieren?\n\nDie Einstellungen des System-Monitors bleiben erhalten.')) return;
     try { await api('/api/sysmon/install', {body: {}}); refresh(); } catch (e) { toast(e.message); }
   };
   rstBtn.onclick = async () => { try { await api('/api/sysmon/restart', {body: {}}); toast('System-Monitor neu gestartet'); setTimeout(refresh, 2500); } catch (e) { toast(e.message); } };
@@ -1199,7 +1202,7 @@ function sysmonPanel() {
   };
   refresh();
   return el('div', {class: 'panel'}, el('h3', null, 'System-Monitor (MQTT)'),
-    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Eigenes Programm, das CPU, GPU, RAM, Temperaturen, Lüfter und Leistung des Jetson per MQTT sendet – mit eigener Webseite. ',
+    el('p', {class: 'muted small', style: {marginTop: 0}}, 'Eigenes Programm, das CPU, RAM, Temperaturen und weitere Systemwerte des Jetson per MQTT sendet – mit eigener Webseite. Wird direkt von GitHub geladen. ',
       el('a', {href: 'https://github.com/Scorch1262/System-Monitor-MQTT-MK1', target: '_blank', rel: 'noopener'}, 'GitHub')),
     info, logBox,
     el('div', {class: 'actions'}, openBtn, instBtn, rstBtn, mqBtn));

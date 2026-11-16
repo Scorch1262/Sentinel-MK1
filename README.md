@@ -8,7 +8,7 @@ hinweg wiedererkannt**. Personen werden einzeln identifiziert (Gesicht + Aussehe
 verbessern die nächste Zuordnung, und Alarmregeln melden, wenn z. B. dieselbe Person mehrfach
 auftaucht.
 
-**Version: 2.9.0** · Web-Port **8096** · läuft komplett lokal, keine Cloud
+**Version: 2.9.1** · Web-Port **8096** · läuft komplett lokal, keine Cloud
 
 ![Live-Ansicht mit drei Streams und farbigen Rahmen](docs/vorschau.png)
 
@@ -62,8 +62,8 @@ auftaucht.
   Klick auf einen Rahmen öffnet das Objekt. iPhone/iPad-tauglich.
 - **Bewegungsfilter:** ruhige Szenen werden nicht analysiert (spart Rechenzeit).
 - **System-Monitor eingebunden:** [System-Monitor-MQTT-MK1](https://github.com/Scorch1262/System-Monitor-MQTT-MK1)
-  sendet CPU, GPU, RAM, Temperaturen, Lüfter und Leistung des Jetson per MQTT – installieren,
-  aktualisieren und **öffnen** unter Einstellungen → System-Monitor.
+  sendet CPU, RAM, Temperaturen und weitere Systemwerte des Jetson per MQTT – wird unter
+  Einstellungen → System-Monitor **direkt von GitHub** installiert/aktualisiert und dort **geöffnet**.
 - **Gerät herunterfahren / neu starten** per Knopf unter Einstellungen → System (laufende
   Aufnahmen werden vorher abgeschlossen).
 - **Speicherverwaltung:** Bilder und Videos nach x Tagen bzw. ab x MB automatisch löschen – gelernte
@@ -302,22 +302,28 @@ Unter **Einstellungen → Streams** hat jeder Stream zwei Auswahlfelder:
 
 [System-Monitor-MQTT-MK1](https://github.com/Scorch1262/System-Monitor-MQTT-MK1) ist ein eigenes
 Programm (eigener Dienst `system-monitor-mqtt`, Ordner `/opt/System-Monitor-MQTT-MK1`, Webseite
-Port **8095**). Es sendet CPU-Last, GPU-Last/-Takt/-Temperatur, RAM, Temperaturen, Lüfter und die
-Leistungsmesser des Jetson an einen MQTT-Broker (Standard-Topic `pc/<hostname>/…`, auf dessen
-Webseite änderbar).
+Port **8095**). Es sendet CPU-Last, RAM, Temperaturen und weitere Systemwerte an einen MQTT-Broker
+(Standard-Topic `pc/<hostname>/…`, auf dessen Webseite änderbar). Sentinel lädt es **direkt aus dem
+GitHub-Repo** (aktueller Stand des `main`-Zweigs, über dessen `install.sh`) – ein eigenes Paket ist
+nicht nötig.
 
 Unter **Einstellungen → System-Monitor (MQTT)**:
 
 | Knopf | Wirkung |
 |---|---|
 | **Öffnen ↗** | Webseite des System-Monitors in einem neuen Tab |
-| **Installieren / Aktualisieren** | holt `install.sh` aus GitHub und richtet den Dienst ein; Fortschritt wird angezeigt |
+| **Von GitHub installieren / aktualisieren** | lädt den System-Monitor aus GitHub und richtet den Dienst ein; Fortschritt wird angezeigt, „Auf GitHub“ zeigt die dort verfügbare Version |
 | **Neu starten** | Dienst neu starten |
 | **MQTT von Sentinel übernehmen** | Broker, Port, Benutzer und Passwort aus Einstellungen → MQTT eintragen |
 
 Der Installer fragt bei der Einrichtung, ob der System-Monitor mitinstalliert werden soll
-(`--mit-systemmonitor` / `--ohne-systemmonitor`). Auf dem Jetson (Python 3.6) wird Version
-**1.4.0 oder neuer** benötigt.
+(`--mit-systemmonitor` / `--ohne-systemmonitor`).
+
+**Python 3.6:** Der System-Monitor ist für Python ≥ 3.7 geschrieben, JetPack 4 hat Python 3.6. Sentinel
+ändert dessen Code nicht, sondern legt eine kleine Anpassung daneben
+(`/opt/System-Monitor-MQTT-MK1/py36/sitecustomize.py`) und lädt sie per systemd-Drop-in
+(`/etc/systemd/system/system-monitor-mqtt.service.d/sentinel-py36.conf`) nur in diesen Dienst. Sie bleibt
+bei Updates des System-Monitors erhalten und wird beim Start von Sentinel bei Bedarf nachgerüstet.
 
 ## Kamera wird nicht angezeigt
 
@@ -445,7 +451,7 @@ sentinel/
   engine.py            Streams, Analyse, Verfolgung, Wiedererkennung, Alarme, Aufräumen
   detector.py          YOLOX / NanoDet (Objekte), YuNet (Gesichter), SFace (Gesichtsmerkmale)
   trt.py               TensorRT-Ausführung auf der Jetson-GPU (CUDA per ctypes, ohne pycuda)
-  sysmon.py            Einbindung System-Monitor-MQTT-MK1 (Zustand, Installation, MQTT übernehmen)
+  sysmon.py            Einbindung System-Monitor-MQTT-MK1 (Zustand, Installation von GitHub, Python-3.6-Anpassung)
   sysinfo.py           Geräteerkennung, GPU-Last, Temperatur, RAM
   fan.py               Lüfterregelung für den Jetson (PWM-Kurve)
   onnxlite.py          CPU-Rückfall: KI-Laufzeit nur mit numpy (ONNX-Leser + Operatoren)

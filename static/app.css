@@ -345,4 +345,6 @@ pre.log{background:#06080a;border:1px solid var(--border);border-radius:8px;padd
 .ok-txt{color:var(--accent-2)}
 .btn.disabled{opacity:.5;pointer-events:none}
 a.btn{text-decoration:none;display:inline-flex;align-items:center}
-.kv .ok-txt{color:var(--accent-2)}
+.kv span.ok-txt,.kv span.err-line{font-family:var(--sans);font-size:13px;padding-top:0}
+.kv span.ok-txt{color:var(--accent-2)}
+.kv span.err-line{color:var(--danger)}

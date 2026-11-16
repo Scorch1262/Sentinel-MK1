@@ -24,7 +24,7 @@
 #
 #  Ziel:   /opt/Sentinel-MK1 (Programm, config.json, data/)   Dienst: sentinel (systemd)
 # ============================================================================
-VERSION=2.9.0
+VERSION=2.9.1
 REPO=Scorch1262/Sentinel-MK1
 DIR=${SENTINEL_DIR:-/opt/Sentinel-MK1}
 PORT=""
@@ -337,6 +337,9 @@ if [ "$SYSMON" = "on" ]; then
     log "Installiere System-Monitor-MQTT-MK1 ..."
     if fetch "https://raw.githubusercontent.com/Scorch1262/System-Monitor-MQTT-MK1/main/install.sh" /tmp/sysmon-install.sh \
             && sh < /tmp/sysmon-install.sh; then
+        # System-Monitor braucht Python 3.7 - Jetson hat 3.6: Anpassung nur fuer dessen Dienst einrichten
+        (cd "$DIR" && python3 -c "from sentinel.sysmon import SysMon; SysMon(print).ensure_compat(restart=True)") \
+            || log "WARNUNG: Python-3.6-Anpassung fuer den System-Monitor fehlgeschlagen"
         ok "System-Monitor installiert (Einstellungen -> System-Monitor -> Oeffnen)"
     else
         log "WARNUNG: System-Monitor nicht installiert - spaeter in Sentinel unter Einstellungen nachholen"

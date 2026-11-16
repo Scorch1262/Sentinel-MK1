@@ -1,5 +1,12 @@
 # Änderungen
 
+## 2.9.1
+- System-Monitor wird in den Einstellungen direkt von GitHub geladen (unveränderter aktueller Stand
+  des Repos) – kein angepasstes Paket mehr nötig
+- Python-3.6-Anpassung für den System-Monitor (sitecustomize.py + systemd-Drop-in, nur für dessen
+  Dienst), wird nach der Installation und beim Start von Sentinel automatisch eingerichtet
+- Anzeige „Auf GitHub“ mit der dort verfügbaren Version; Knöpfe „Von GitHub installieren/aktualisieren“
+
 ## 2.9.0
 - System-Monitor-MQTT-MK1 eingebunden: Einstellungen → System-Monitor (MQTT) zeigt Zustand,
   Version, Webseite und MQTT-Verbindung; Knöpfe **Öffnen**, Installieren/Aktualisieren (mit
